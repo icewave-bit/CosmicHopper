@@ -11,6 +11,8 @@ export type PlanetArtifact = {
 export type ViewportLayout = {
   width: number;
   height: number;
+  worldW: number;
+  worldH: number;
   scale: number;
   offsetX: number;
   offsetY: number;

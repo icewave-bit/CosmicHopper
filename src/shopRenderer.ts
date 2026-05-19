@@ -1,6 +1,6 @@
 import { drawShieldAura } from "./shipVisuals";
 import { computeShopLayout, type ShopLayout } from "./shopUi";
-import type { GameState, Level } from "./types";
+import type { GameState } from "./types";
 import type { ShipUpgrades, UpgradeId } from "./upgrades";
 import {
   isPaintOwned,
@@ -24,7 +24,8 @@ const COLORS = {
 
 export function drawShop(
   ctx: CanvasRenderingContext2D,
-  level: Level,
+  viewportW: number,
+  viewportH: number,
   state: GameState,
   upgrades: ShipUpgrades,
   shopOpen: boolean,
@@ -34,8 +35,8 @@ export function drawShop(
   if (!canUse) return;
 
   const layout = computeShopLayout(
-    level.width,
-    level.height,
+    viewportW,
+    viewportH,
     shopOpen,
     upgrades,
     paintPreview
@@ -46,7 +47,7 @@ export function drawShop(
     return;
   }
 
-  drawModal(ctx, layout, upgrades, level.width, level.height, paintPreview);
+  drawModal(ctx, layout, upgrades, viewportW, viewportH, paintPreview);
 }
 
 function drawOpenButton(ctx: CanvasRenderingContext2D, layout: ShopLayout) {
@@ -57,10 +58,10 @@ function drawOpenButton(ctx: CanvasRenderingContext2D, layout: ShopLayout) {
   ctx.fillStyle = `rgba(57, 255, 20, ${0.12 * pulse})`;
   ctx.fillRect(b.x, b.y, b.w, b.h);
   ctx.strokeStyle = COLORS.phosphor;
-  ctx.lineWidth = 1;
+  ctx.lineWidth = 2;
   ctx.strokeRect(b.x, b.y, b.w, b.h);
 
-  ctx.font = `8px ${font}`;
+  ctx.font = `7px ${font}`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = COLORS.phosphor;
@@ -72,15 +73,15 @@ function drawModal(
   ctx: CanvasRenderingContext2D,
   layout: ShopLayout,
   upgrades: ShipUpgrades,
-  levelW: number,
-  levelH: number,
+  viewportW: number,
+  viewportH: number,
   paintPreview: number | null
 ) {
   const { modal } = layout;
   const font = '"Press Start 2P", monospace';
 
   ctx.fillStyle = "rgba(0, 2, 8, 0.86)";
-  ctx.fillRect(0, 0, levelW, levelH);
+  ctx.fillRect(0, 0, viewportW, viewportH);
 
   ctx.fillStyle = "rgba(4, 12, 8, 0.96)";
   ctx.fillRect(modal.x, modal.y, modal.w, modal.h);
@@ -101,26 +102,26 @@ function drawModal(
   ctx.fillStyle = "rgba(255, 80, 80, 0.18)";
   ctx.fillRect(rb.x, rb.y, rb.w, rb.h);
   ctx.strokeStyle = "rgba(255, 100, 100, 0.85)";
-  ctx.lineWidth = 1;
+  ctx.lineWidth = 2;
   ctx.strokeRect(rb.x, rb.y, rb.w, rb.h);
-  ctx.font = `8px ${font}`;
+  ctx.font = `7px ${font}`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "rgba(255, 120, 120, 0.95)";
-  ctx.fillText("RESET", rb.x + rb.w / 2, rb.y + rb.h / 2);
+  ctx.fillText("RST", rb.x + rb.w / 2, rb.y + rb.h / 2);
   ctx.textBaseline = "alphabetic";
 
   const cb = layout.closeButton;
   ctx.fillStyle = "rgba(255, 107, 53, 0.2)";
   ctx.fillRect(cb.x, cb.y, cb.w, cb.h);
   ctx.strokeStyle = COLORS.warn;
-  ctx.lineWidth = 1;
+  ctx.lineWidth = 2;
   ctx.strokeRect(cb.x, cb.y, cb.w, cb.h);
-  ctx.font = `8px ${font}`;
+  ctx.font = `7px ${font}`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = COLORS.warn;
-  ctx.fillText("CLOSE", cb.x + cb.w / 2, cb.y + cb.h / 2);
+  ctx.fillText("X", cb.x + cb.w / 2, cb.y + cb.h / 2);
   ctx.textBaseline = "alphabetic";
 
   for (const card of layout.upgradeCards) {

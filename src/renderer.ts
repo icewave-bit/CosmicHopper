@@ -6,6 +6,7 @@ import {
 import { clamp, dist, len } from "./math";
 import type { Asteroid, GameState, Level, PreviewPath, Vec2, ViewportLayout } from "./types";
 import { drawHelpOverlay, drawHelpPrompt } from "./helpRenderer";
+import { computeScreenHudLayout, drawScreenHud } from "./screenHud";
 import { drawShop } from "./shopRenderer";
 import { drawShieldAura } from "./shipVisuals";
 import { shipColor, type ShipUpgrades } from "./upgrades";
@@ -33,7 +34,15 @@ export class Renderer {
   private scanPhase = 0;
   private speedSamples: number[] = [];
   private lastSpeedTrend: "up" | "down" = "up";
-  private layout: ViewportLayout = { width: 1, height: 1, scale: 1, offsetX: 0, offsetY: 0 };
+  private layout: ViewportLayout = {
+    width: 1,
+    height: 1,
+    worldW: 800,
+    worldH: 600,
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+  };
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -108,19 +117,19 @@ export class Renderer {
       this.drawPowerBar(level, state.aimPower, state.thrustMultiplier);
     }
 
-    if (state.phase === "flight") {
-      this.drawBrakeIndicator(state);
-    }
-
     this.drawHud(level, state, upgrades);
-    drawShop(ctx, level, state, upgrades, shopOpen, paintPreview);
-    if (helpOpen) {
-      drawHelpOverlay(ctx, w, h);
-    } else {
-      drawHelpPrompt(ctx, w, h);
-    }
     this.drawScanlines(w, h);
     this.drawVignette(w, h);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawShop(ctx, vw, vh, state, upgrades, shopOpen, paintPreview);
+    if (helpOpen) {
+      drawHelpOverlay(ctx, vw, vh);
+    } else {
+      drawHelpPrompt(ctx, vw, vh);
+    }
+    const hudLayout = computeScreenHudLayout(vw, vh, state.phase);
+    drawScreenHud(ctx, hudLayout, state.phase, state.braking);
   }
 
   private drawGrid(w: number, h: number) {
@@ -620,19 +629,6 @@ export class Renderer {
     }
   }
 
-  private drawBrakeIndicator(state: GameState) {
-    const { ctx } = this;
-    const font = '"Press Start 2P", monospace';
-    ctx.font = `8px ${font}`;
-    ctx.textAlign = "center";
-    ctx.fillStyle = state.braking ? COLORS.warn : COLORS.phosphorDim;
-    ctx.fillText(
-      state.braking ? "RETRO BURN" : "HOLD SPACE TO STOP",
-      state.ship.x,
-      state.ship.y - 22
-    );
-  }
-
   private drawHullBar(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -701,7 +697,7 @@ export class Renderer {
       if (state.phase === "won" || state.phase === "lost") {
         ctx.font = `8px ${font}`;
         ctx.fillStyle = COLORS.phosphorDim;
-        ctx.fillText("CLICK OR SPACE TO CONTINUE", level.width / 2, level.height / 2 + 8);
+        ctx.fillText("TAP CONTINUE OR SPACE", level.width / 2, level.height / 2 + 8);
       }
     }
   }

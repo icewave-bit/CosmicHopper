@@ -10,7 +10,7 @@ function helpLines(): HelpLine[] {
   return [
     { text: "COLLECT CREDITS · GET TO PORTAL · UPGRADE YOUR SHIP" },
     { text: "DRAG FROM SHIP · RELEASE TO START", dim: true },
-    { text: "HOLD SPACE — THRUST REVERSAL", dim: true },
+    { text: "HOLD SPACE OR BRAKE — THRUST REVERSAL", dim: true },
     { text: "N — NEXT SECTOR", dim: true },
     { text: "G — NEW RANDOM SECTOR", dim: true },
     { text: "R — RESTART SECTOR", dim: true },
@@ -19,33 +19,33 @@ function helpLines(): HelpLine[] {
 
 export function drawHelpPrompt(
   ctx: CanvasRenderingContext2D,
-  levelW: number,
-  levelH: number
+  viewportW: number,
+  viewportH: number
 ) {
   const font = '"Press Start 2P", monospace';
   ctx.font = `8px ${font}`;
   ctx.textAlign = "center";
   ctx.fillStyle = COLORS.phosphorDim;
-  ctx.fillText("PRESS H FOR HELP", levelW / 2, levelH - 14);
+  ctx.fillText("PRESS H FOR HELP", viewportW / 2, viewportH - 14);
 }
 
 export function drawHelpOverlay(
   ctx: CanvasRenderingContext2D,
-  levelW: number,
-  levelH: number
+  viewportW: number,
+  viewportH: number
 ) {
   const font = '"Press Start 2P", monospace';
 
   ctx.fillStyle = "rgba(0, 2, 8, 0.88)";
-  ctx.fillRect(0, 0, levelW, levelH);
+  ctx.fillRect(0, 0, viewportW, viewportH);
 
   const pad = 20;
   const lineH = 14;
   const lines = helpLines();
-  const boxW = Math.min(560, levelW - 40);
-  const boxH = Math.min(48 + lines.length * lineH + 28, levelH - 40);
-  const bx = (levelW - boxW) / 2;
-  const by = (levelH - boxH) / 2;
+  const boxW = Math.min(560, viewportW - 40);
+  const boxH = Math.min(48 + lines.length * lineH + 28, viewportH - 40);
+  const bx = (viewportW - boxW) / 2;
+  const by = (viewportH - boxH) / 2;
 
   ctx.fillStyle = "rgba(4, 12, 8, 0.98)";
   ctx.fillRect(bx, by, boxW, boxH);
@@ -69,5 +69,5 @@ export function drawHelpOverlay(
   ctx.textAlign = "center";
   ctx.fillStyle = COLORS.accent;
   ctx.font = `8px ${font}`;
-  ctx.fillText("PRESS H CLOSE", levelW / 2, by + boxH - 14);
+  ctx.fillText("PRESS H CLOSE", viewportW / 2, by + boxH - 14);
 }

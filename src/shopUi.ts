@@ -2,6 +2,7 @@ import type { ShipUpgrades } from "./upgrades";
 import { isPaintOwned, SHIP_COLORS, UPGRADE_DEFS } from "./upgrades";
 import type { UpgradeId } from "./upgrades";
 import type { Vec2 } from "./types";
+import { TOUCH_MIN } from "./screenHud";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -29,17 +30,17 @@ function contains(r: Rect, p: Vec2): boolean {
 }
 
 export function computeShopLayout(
-  levelW: number,
-  levelH: number,
+  viewportW: number,
+  viewportH: number,
   shopOpen: boolean,
   upgrades: ShipUpgrades,
   paintPreview: number | null
 ): ShopLayout {
-  const openW = 88;
-  const openH = 24;
+  const openW = TOUCH_MIN;
+  const openH = TOUCH_MIN;
   const openButton: Rect = {
     x: 16,
-    y: levelH - openH - 24,
+    y: viewportH - openH - 16,
     w: openW,
     h: openH,
   };
@@ -48,28 +49,28 @@ export function computeShopLayout(
   const cardGap = 8;
   const colorBlock = 108;
   const header = 50;
-  const modalW = Math.min(580, levelW - 32);
+  const modalW = Math.min(580, viewportW - 32);
   const contentH = header + UPGRADE_DEFS.length * (cardH + cardGap) + colorBlock;
-  const modalH = Math.min(contentH, levelH - 40);
+  const modalH = Math.min(contentH, viewportH - 40);
   const modal: Rect = {
-    x: (levelW - modalW) / 2,
-    y: (levelH - modalH) / 2,
+    x: (viewportW - modalW) / 2,
+    y: (viewportH - modalH) / 2,
     w: modalW,
     h: modalH,
   };
 
   const closeButton: Rect = {
-    x: modal.x + modal.w - 84,
-    y: modal.y + 16,
-    w: 72,
-    h: 24,
+    x: modal.x + modal.w - TOUCH_MIN - 8,
+    y: modal.y + 12,
+    w: TOUCH_MIN,
+    h: TOUCH_MIN,
   };
 
   const resetButton: Rect = {
-    x: modal.x + modal.w - 168,
-    y: modal.y + 16,
-    w: 76,
-    h: 24,
+    x: modal.x + modal.w - TOUCH_MIN * 2 - 20,
+    y: modal.y + 12,
+    w: TOUCH_MIN,
+    h: TOUCH_MIN,
   };
 
   const cardsTop = modal.y + header;
@@ -82,11 +83,10 @@ export function computeShopLayout(
       w: cardW,
       h: cardH,
     };
-    const buyPad = 10;
-    const buyW = 84;
-    const buyH = 32;
+    const buyW = TOUCH_MIN;
+    const buyH = TOUCH_MIN;
     const buy: Rect = {
-      x: bounds.x + bounds.w - buyW - buyPad,
+      x: bounds.x + bounds.w - buyW - 10,
       y: bounds.y + (bounds.h - buyH) / 2,
       w: buyW,
       h: buyH,
@@ -95,7 +95,7 @@ export function computeShopLayout(
   });
 
   const colorsTop = cardsTop + UPGRADE_DEFS.length * (cardH + cardGap) + 26;
-  const swatch = 36;
+  const swatch = TOUCH_MIN;
   const swatchGap = 10;
   const rowW = SHIP_COLORS.length * swatch + (SHIP_COLORS.length - 1) * swatchGap;
   const rowX = modal.x + (modal.w - rowW) / 2;
@@ -112,18 +112,18 @@ export function computeShopLayout(
 
   const colorSectionBottom =
     cardsTop + UPGRADE_DEFS.length * (cardH + cardGap) + colorBlock;
-  const paintBuyH = 30;
+  const paintBuyH = TOUCH_MIN;
   const paintBuyAreaTop = colorsTop + swatch;
 
   const showPaintBuy =
     paintPreview !== null && !isPaintOwned(upgrades, paintPreview);
   const paintBuyButton: Rect | null = showPaintBuy
     ? {
-        x: modal.x + modal.w / 2 - 52,
+        x: modal.x + modal.w / 2 - 60,
         y:
           paintBuyAreaTop +
           (colorSectionBottom - paintBuyAreaTop - paintBuyH) / 2,
-        w: 104,
+        w: 120,
         h: paintBuyH,
       }
     : null;

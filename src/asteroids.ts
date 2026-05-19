@@ -17,8 +17,11 @@ const ASTEROID_ORBIT_BAND = 2.8;
 const ASTEROID_ORBIT_GRAV_FADE = 0.82;
 const ASTEROID_MAX_SPEED = 52;
 const ASTEROID_SURFACE_PAD = 1;
-const ASTEROID_BOUNCE_REST = 0.58;
+/** Higher restitution — asteroids should ricochet off planets, not settle on them. */
+const ASTEROID_BOUNCE_REST = 0.82;
 const ASTEROID_BOUNCE_EXTRA_PAD = 3;
+/** Min outward speed after a planet hit (counters gravity between substeps). */
+const ASTEROID_BOUNCE_MIN_OUT = 32;
 const ASTEROID_ASTEROID_REST = 0.55;
 const ASTEROID_ASTEROID_PAD = 0.5;
 export const SHIP_HIT_RADIUS = 5;
@@ -109,6 +112,12 @@ function planetGravityAccel(pos: Vec2, vel: Vec2, bodies: Body[]): Vec2 {
       }
     }
 
+    // Near the surface, ease pull so weak bounces are not re-captured immediately.
+    const skimBand = b.radius * 0.14;
+    if (gap < skimBand && gap > 0) {
+      f *= Math.max(0.2, gap / skimBand);
+    }
+
     ax += (f * d.x) / r;
     ay += (f * d.y) / r;
   }
@@ -154,19 +163,19 @@ function resolvePlanetCollisions(a: Asteroid, bodies: Body[]) {
     a.y = b.y + ny * (minDist + ASTEROID_BOUNCE_EXTRA_PAD);
 
     if (vDotN < 0) {
-      const rest = ASTEROID_BOUNCE_REST + Math.min(0.18, impactSpeed / 120);
+      const rest = ASTEROID_BOUNCE_REST + Math.min(0.12, impactSpeed / 90);
       a.vx -= (1 + rest) * vDotN * nx;
       a.vy -= (1 + rest) * vDotN * ny;
 
       const tx = -ny;
       const ty = nx;
-      const slide = (Math.random() - 0.5) * Math.max(impactSpeed, 14) * 0.4;
+      const slide = (Math.random() - 0.5) * Math.max(impactSpeed, 20) * 0.55;
       a.vx += tx * slide;
       a.vy += ty * slide;
     }
 
     const outward = a.vx * nx + a.vy * ny;
-    const needOut = Math.max(18, impactSpeed * 0.42);
+    const needOut = Math.max(ASTEROID_BOUNCE_MIN_OUT, impactSpeed * 0.72);
     if (outward < needOut) {
       a.vx += nx * (needOut - outward);
       a.vy += ny * (needOut - outward);

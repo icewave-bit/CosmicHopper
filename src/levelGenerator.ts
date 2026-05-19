@@ -1,11 +1,11 @@
 import { defaultArtifact } from "./artifacts";
+import { REF_H } from "./fitLevel";
+import { applyWorldBounds, marginFor, type NormalizedBody, type NormalizedLevelDef } from "./levelLayout";
 import { dist, len, sub } from "./math";
 import { simulateTrajectory } from "./physics";
 import type { Body, Level, Vec2 } from "./types";
+import { effectiveSectorRange, type SectorProfile } from "./sector";
 
-const WIDTH = 800;
-const HEIGHT = 600;
-const MARGIN = 56;
 const POWER_SCALE = 1.95;
 
 const PLANET_COLORS = [
@@ -22,8 +22,10 @@ const PLANET_COLORS = [
 export type GenerateOptions = {
   seed: number;
   displayIndex?: number;
-  width?: number;
-  height?: number;
+  worldW: number;
+  worldH: number;
+  profile: SectorProfile;
+  viewportMinPx?: number;
 };
 
 function mulberry32(seed: number) {
@@ -44,45 +46,54 @@ function overlaps(a: { x: number; y: number; radius: number }, b: { x: number; y
   return dist(a, b) < a.radius + b.radius + pad;
 }
 
-function inBounds(p: Vec2, r: number, w: number, h: number): boolean {
-  return p.x - r >= MARGIN && p.x + r <= w - MARGIN && p.y - r >= MARGIN && p.y + r <= h - MARGIN;
+function inBounds(p: Vec2, r: number, w: number, h: number, margin: number): boolean {
+  return p.x - r >= margin && p.x + r <= w - margin && p.y - r >= margin && p.y + r <= h - margin;
 }
 
-function pickStart(rng: () => number, w: number, h: number): Vec2 {
+function pickStart(rng: () => number, w: number, h: number, margin: number): Vec2 {
   const edge = Math.floor(rng() * 4);
-  const t = MARGIN + rng() * (edge % 2 === 0 ? w - MARGIN * 2 : h - MARGIN * 2);
+  const t = margin + rng() * (edge % 2 === 0 ? w - margin * 2 : h - margin * 2);
   switch (edge) {
     case 0:
-      return { x: MARGIN, y: t };
+      return { x: margin, y: t };
     case 1:
-      return { x: w - MARGIN, y: t };
+      return { x: w - margin, y: t };
     case 2:
-      return { x: t, y: MARGIN };
+      return { x: t, y: margin };
     default:
-      return { x: t, y: h - MARGIN };
+      return { x: t, y: h - margin };
   }
 }
 
-function pickBlackHole(rng: () => number, w: number, h: number, start: Vec2): Vec2 {
+function pickBlackHole(
+  rng: () => number,
+  w: number,
+  h: number,
+  margin: number,
+  start: Vec2,
+  range: number
+): Vec2 {
+  const minDist = 260 * range;
+  const maxDist = 520 * range;
   for (let i = 0; i < 40; i++) {
     const p = {
-      x: MARGIN + 40 + rng() * (w - MARGIN * 2 - 80),
-      y: MARGIN + 40 + rng() * (h - MARGIN * 2 - 80),
+      x: margin + 40 + rng() * (w - margin * 2 - 80),
+      y: margin + 40 + rng() * (h - margin * 2 - 80),
     };
-    if (dist(p, start) > 260 && dist(p, start) < 520) return p;
+    const d = dist(p, start);
+    if (d > minDist && d < maxDist) return p;
   }
   return { x: w - 100, y: h * 0.25 + rng() * h * 0.5 };
 }
 
-function planetBetween(start: Vec2, hole: Vec2, planet: Vec2): boolean {
+function planetBetween(start: Vec2, hole: Vec2, planet: Vec2, range: number): boolean {
   const ab = sub(hole, start);
   const ap = sub(planet, start);
   const abLen = len(ab);
   if (abLen < 1) return false;
   const t = (ap.x * ab.x + ap.y * ab.y) / (abLen * abLen);
   if (t < 0.12 || t > 0.88) return false;
-  const proj = { x: start.x + ab.x * t, y: start.y + ab.y * t };
-  return dist(planet, proj) < 120;
+  return dist(planet, { x: start.x + ab.x * t, y: start.y + ab.y * t }) < 120 * range;
 }
 
 function isSolvable(level: Level): boolean {
@@ -120,16 +131,47 @@ function isSolvable(level: Level): boolean {
   return false;
 }
 
-function tryGenerate(seed: number, displayIndex: number): Level | null {
-  const rng = mulberry32(seed);
-  const w = WIDTH;
-  const h = HEIGHT;
-  const difficulty = Math.min(3, Math.floor(seed / 7) % 4);
-  const planetCount = 2 + Math.floor(rng() * 3) + (difficulty > 1 ? 1 : 0);
+function toNormalized(
+  bodies: Body[],
+  start: Vec2,
+  worldW: number,
+  worldH: number
+): { startNx: number; startNy: number; bodies: NormalizedBody[] } {
+  const scaleR = Math.min(worldW, worldH);
+  return {
+    startNx: start.x / worldW,
+    startNy: start.y / worldH,
+    bodies: bodies.map((b) => ({
+      id: b.id,
+      nx: b.x / worldW,
+      ny: b.y / worldH,
+      nr: b.radius / scaleR,
+      mass: b.mass,
+      kind: b.kind,
+      color: b.color,
+      artifact: b.artifact,
+    })),
+  };
+}
 
-  const start = pickStart(rng, w, h);
-  const holePos = pickBlackHole(rng, w, h, start);
-  const holeRadius = 24 + Math.floor(rng() * 8);
+function tryGenerate(
+  seed: number,
+  displayIndex: number,
+  worldW: number,
+  worldH: number,
+  profile: SectorProfile,
+  viewportMinPx: number
+): Level | null {
+  const rng = mulberry32(seed);
+  const margin = marginFor(worldW, worldH);
+  const range = effectiveSectorRange(profile, viewportMinPx);
+  const difficulty = Math.min(3, Math.floor(seed / 7) % 4);
+  const planetCount =
+    2 + Math.floor(rng() * 3) + (difficulty > 1 ? 1 : 0) + Math.floor(profile.density - 1);
+
+  const start = pickStart(rng, worldW, worldH, margin);
+  const holePos = pickBlackHole(rng, worldW, worldH, margin, start, range);
+  const holeRadius = (24 + Math.floor(rng() * 8)) * (0.92 + range * 0.04);
   const holeMass = 17500 + Math.floor(rng() * 5500);
 
   const bodies: Body[] = [
@@ -144,15 +186,17 @@ function tryGenerate(seed: number, displayIndex: number): Level | null {
     },
   ];
 
+  const padScale = 28 * (0.85 + range * 0.08);
+
   for (let i = 0; i < planetCount; i++) {
     let placed = false;
     for (let attempt = 0; attempt < 60; attempt++) {
-      const radius = 26 + Math.floor(rng() * 20);
+      const radius = (26 + Math.floor(rng() * 20)) * (0.95 + range * 0.03);
       const mass = 6500 + radius * 160 + Math.floor(rng() * 3500);
       const candidate: Body = {
         id: `p${i}`,
-        x: MARGIN + radius + rng() * (w - 2 * MARGIN - 2 * radius),
-        y: MARGIN + radius + rng() * (h - 2 * MARGIN - 2 * radius),
+        x: margin + radius + rng() * (worldW - 2 * margin - 2 * radius),
+        y: margin + radius + rng() * (worldH - 2 * margin - 2 * radius),
         radius,
         mass,
         kind: "planet",
@@ -160,13 +204,13 @@ function tryGenerate(seed: number, displayIndex: number): Level | null {
         artifact: defaultArtifact(rng, 10 + Math.floor(rng() * 18)),
       };
 
-      if (!inBounds(candidate, candidate.radius, w, h)) continue;
-      if (dist(candidate, start) < candidate.radius + 64) continue;
-      if (dist(candidate, holePos) < candidate.radius + holeRadius + 48) continue;
+      if (!inBounds(candidate, candidate.radius, worldW, worldH, margin)) continue;
+      if (dist(candidate, start) < candidate.radius + 64 * range) continue;
+      if (dist(candidate, holePos) < candidate.radius + holeRadius + 48 * range) continue;
 
       let ok = true;
       for (const other of bodies) {
-        if (overlaps(candidate, other, 28)) {
+        if (overlaps(candidate, other, padScale)) {
           ok = false;
           break;
         }
@@ -181,46 +225,39 @@ function tryGenerate(seed: number, displayIndex: number): Level | null {
   }
 
   const planets = bodies.filter((b) => b.kind === "planet");
-  if (!planets.some((p) => planetBetween(start, holePos, p))) return null;
+  if (!planets.some((p) => planetBetween(start, holePos, p, range))) return null;
 
-  const level: Level = {
+  const norm = toNormalized(bodies, start, worldW, worldH);
+  const def: NormalizedLevelDef = {
     id: `gen-${seed}`,
     name: `SECTOR ${String(displayIndex + 1).padStart(2, "0")}`,
-    width: w,
-    height: h,
-    start: { ...start },
-    bodies,
-    par: 2 + planets.length + (difficulty > 2 ? 1 : 0),
+    startNx: norm.startNx,
+    startNy: norm.startNy,
+    bodies: norm.bodies,
+    par: 2 + planets.length + (difficulty > 2 ? 1 : 0) + profile.parBias,
     seed,
     generated: true,
   };
 
+  const level = applyWorldBounds(def, worldW, worldH);
   return isSolvable(level) ? level : null;
 }
 
-export function generateLevel(options: GenerateOptions): Level {
-  const baseSeed = options.seed;
-  const displayIndex = options.displayIndex ?? baseSeed;
-  for (let attempt = 0; attempt < 48; attempt++) {
-    const level = tryGenerate(baseSeed + attempt * 9973, displayIndex);
-    if (level) return level;
-  }
-
+function fallbackDef(displayIndex: number, baseSeed: number): NormalizedLevelDef {
   return {
     id: `gen-fallback-${baseSeed}`,
     name: `SECTOR ${String(displayIndex + 1).padStart(2, "0")}`,
-    width: WIDTH,
-    height: HEIGHT,
-    start: { x: 80, y: 300 },
+    startNx: 80 / 800,
+    startNy: 0.5,
     par: 3,
     seed: baseSeed,
     generated: true,
     bodies: [
       {
         id: "p1",
-        x: 380,
-        y: 300,
-        radius: 38,
+        nx: 380 / 800,
+        ny: 0.5,
+        nr: 38 / REF_H,
         mass: 12000,
         kind: "planet",
         color: "#3a8f5c",
@@ -228,13 +265,34 @@ export function generateLevel(options: GenerateOptions): Level {
       },
       {
         id: "bh",
-        x: 680,
-        y: 300,
-        radius: 28,
+        nx: 680 / 800,
+        ny: 0.5,
+        nr: 28 / REF_H,
         mass: 19000,
         kind: "blackhole",
         color: "#8b5cf6",
       },
     ],
   };
+}
+
+export function generateLevel(options: GenerateOptions): Level {
+  const baseSeed = options.seed;
+  const displayIndex = options.displayIndex ?? baseSeed;
+  const { worldW, worldH, profile } = options;
+  const viewportMinPx = options.viewportMinPx ?? 600;
+
+  for (let attempt = 0; attempt < 48; attempt++) {
+    const level = tryGenerate(
+      baseSeed + attempt * 9973,
+      displayIndex,
+      worldW,
+      worldH,
+      profile,
+      viewportMinPx
+    );
+    if (level) return level;
+  }
+
+  return applyWorldBounds(fallbackDef(displayIndex, baseSeed), worldW, worldH);
 }

@@ -10,6 +10,8 @@ import {
 const SHIP_HULL_MAX = 4;
 import { computeViewportLayout, screenToWorld, worldToScreen } from "./fitLevel";
 import { createRandomLevel, resolveLevel } from "./levelCatalog";
+import { sectorBannerMessage, sectorProfileForLevelIndex } from "./sector";
+import { computeScreenHudLayout, hitTestScreenHud } from "./screenHud";
 import { clamp, len, sub } from "./math";
 import { SHIP_FLIGHT_TIME_SCALE, SIM_DT, stepPhysics } from "./physics";
 import { simulatePreviewPath } from "./preview";
@@ -37,11 +39,17 @@ import {
 } from "./upgrades";
 
 const POWER_SCALE = 1.95;
-const MIN_DRAG = 18;
-const MAX_DRAG = 130;
+const REF_MIN_DRAG = 18;
+const REF_MAX_DRAG = 130;
 
-function dragToPower(dragDistance: number): number {
-  return clamp(((dragDistance - MIN_DRAG) / (MAX_DRAG - MIN_DRAG)) * 100, 0, 100);
+function dragBounds(viewportMin: number) {
+  const s = viewportMin / 600;
+  return { min: REF_MIN_DRAG * s, max: REF_MAX_DRAG * s };
+}
+
+function dragToPower(dragDistance: number, viewportMin: number): number {
+  const { min, max } = dragBounds(viewportMin);
+  return clamp(((dragDistance - min) / (max - min)) * 100, 0, 100);
 }
 
 function bestKey(levelId: string) {
@@ -76,7 +84,18 @@ export class Game {
   private trailFrame = 0;
   private raf = 0;
   private resizeObserver: ResizeObserver;
-  private layout: ViewportLayout = { width: 1, height: 1, scale: 1, offsetX: 0, offsetY: 0 };
+  private layout: ViewportLayout = {
+    width: 1,
+    height: 1,
+    worldW: 800,
+    worldH: 600,
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+  };
+  private seenSectorTier = -1;
+  private sectorBannerUntil = 0;
+  private brakePointerDown = false;
   private upgrades: ShipUpgrades = (() => {
     const u = loadUpgrades();
     if (u.credits !== TEST_STARTING_CREDITS) {
@@ -116,17 +135,45 @@ export class Game {
     };
   }
 
+  private viewportMin(): number {
+    const { width, height } = this.viewportSize();
+    return Math.min(width, height);
+  }
+
   private syncViewportLayout() {
     const { width, height } = this.viewportSize();
-    this.layout = computeViewportLayout(width, height, this.level.width, this.level.height);
+    this.layout = computeViewportLayout(width, height);
     this.renderer.setLayout(this.layout);
   }
 
+  private loadLevel(index: number) {
+    const vmin = this.viewportMin();
+    this.level = resolveLevel(index, this.layout.worldW, this.layout.worldH, vmin);
+  }
+
+  private maybeShowSectorBanner(levelIndex: number) {
+    const profile = sectorProfileForLevelIndex(levelIndex);
+    if (profile.tier <= this.seenSectorTier) return;
+    this.seenSectorTier = profile.tier;
+    if (profile.tier === 0) return;
+    this.state.message = sectorBannerMessage(profile);
+    this.sectorBannerUntil = performance.now() + 3000;
+  }
+
+  private clearSectorBannerIfDue() {
+    if (this.sectorBannerUntil > 0 && performance.now() >= this.sectorBannerUntil) {
+      this.sectorBannerUntil = 0;
+      if (this.state.phase === "aim" && this.state.jumps === 0) {
+        this.state.message = "";
+      }
+    }
+  }
+
   private createInitialState(levelIndex: number): GameState {
-    this.level = resolveLevel(levelIndex);
     this.syncViewportLayout();
+    this.loadLevel(levelIndex);
     const level = this.level;
-    return {
+    const state: GameState = {
       levelIndex,
       phase: "aim",
       ship: { ...level.start },
@@ -144,6 +191,9 @@ export class Game {
       hullMax: SHIP_HULL_MAX,
       collectedArtifactIds: [],
     };
+    this.state = state;
+    this.maybeShowSectorBanner(levelIndex);
+    return state;
   }
 
   private collectedSet(): Set<string> {
@@ -233,8 +283,8 @@ export class Game {
     if (!this.canUseShop()) return false;
 
     const layout = computeShopLayout(
-      this.level.width,
-      this.level.height,
+      this.layout.width,
+      this.layout.height,
       this.shopOpen,
       this.upgrades,
       this.paintPreview
@@ -270,29 +320,59 @@ export class Game {
     const toWorld = (e: PointerEvent): Vec2 => screenToWorld(toScreen(e), this.layout);
 
     this.canvas.addEventListener("pointerdown", (e) => {
+      const screen = toScreen(e);
       if (this.helpOpen) return;
-      if (this.state.phase !== "aim") return;
-      const p = toWorld(e);
-      if (this.handleShopPointer(p)) {
-        this.pointer = p;
+
+      const hudHit = hitTestScreenHud(
+        computeScreenHudLayout(this.layout.width, this.layout.height, this.state.phase),
+        screen
+      );
+      if (hudHit?.type === "continue") {
+        this.afterEnd();
         return;
       }
-      this.dragging = true;
-      this.pointer = p;
-      this.updateAim(toScreen(e));
-      this.canvas.setPointerCapture(e.pointerId);
+      if (hudHit?.type === "brake" && this.state.phase === "flight") {
+        this.brakePointerDown = true;
+        this.braking = true;
+        this.state.braking = true;
+        this.canvas.setPointerCapture(e.pointerId);
+        return;
+      }
+
+      if (this.state.phase === "aim") {
+        if (this.handleShopPointer(screen)) {
+          this.pointer = toWorld(e);
+          return;
+        }
+        this.dragging = true;
+        this.pointer = toWorld(e);
+        this.updateAim(screen);
+        this.canvas.setPointerCapture(e.pointerId);
+      }
     });
 
     this.canvas.addEventListener("pointermove", (e) => {
       if (this.helpOpen) return;
       const screen = toScreen(e);
       this.pointer = toWorld(e);
+      if (this.brakePointerDown && this.state.phase === "flight") return;
       if (this.shopOpen && this.canUseShop()) return;
       if (this.dragging && this.state.phase === "aim") this.updateAim(screen);
     });
 
     this.canvas.addEventListener("pointerup", (e) => {
       if (this.helpOpen) return;
+      if (this.brakePointerDown) {
+        this.brakePointerDown = false;
+        this.braking = false;
+        this.state.braking = false;
+        try {
+          this.canvas.releasePointerCapture(e.pointerId);
+        } catch {
+          /* already released */
+        }
+        return;
+      }
       this.pointer = toWorld(e);
       if (this.shopOpen && this.canUseShop()) return;
       if (!this.dragging) return;
@@ -364,7 +444,7 @@ export class Game {
     if (screenDrag < 6) return;
 
     this.state.aimAngle = Math.atan2(dir.y, dir.x);
-    this.state.aimPower = dragToPower(screenDrag);
+    this.state.aimPower = dragToPower(screenDrag, this.viewportMin());
     this.pointer = worldP;
     this.updatePreview();
   }
@@ -393,6 +473,10 @@ export class Game {
 
   private launch() {
     this.closeShop();
+    if (this.sectorBannerUntil > 0) {
+      this.sectorBannerUntil = 0;
+      this.state.message = "";
+    }
     const speed = this.state.aimPower * this.effectivePowerScale();
     this.state.velocity = {
       x: Math.cos(this.state.aimAngle) * speed,
@@ -547,7 +631,12 @@ export class Game {
 
   private generateLevel() {
     this.closeShop();
-    const { index } = createRandomLevel();
+    this.syncViewportLayout();
+    const { index } = createRandomLevel(
+      this.layout.worldW,
+      this.layout.worldH,
+      this.viewportMin()
+    );
     this.state = this.createInitialState(index);
     this.previewPath = { segments: [] };
     this.updatePreview();
@@ -564,15 +653,37 @@ export class Game {
   private resize() {
     const { width, height } = this.viewportSize();
     if (width <= 0 || height <= 0) return;
-    if (width === this.layout.width && height === this.layout.height) return;
 
-    this.layout = computeViewportLayout(width, height, this.level.width, this.level.height);
+    const prevWorldW = this.layout.worldW;
+    const prevWorldH = this.layout.worldH;
+    this.layout = computeViewportLayout(width, height);
     this.renderer.setLayout(this.layout);
-    if (this.state.phase === "aim") this.updatePreview(true);
+
+    const worldChanged =
+      Math.abs(this.layout.worldW - prevWorldW) > 0.5 ||
+      Math.abs(this.layout.worldH - prevWorldH) > 0.5;
+
+    if (worldChanged && this.level) {
+      const shipNx = this.state.ship.x / this.level.width;
+      const shipNy = this.state.ship.y / this.level.height;
+      const wasAim = this.state.phase === "aim";
+      this.loadLevel(this.state.levelIndex);
+      this.state.ship = {
+        x: shipNx * this.level.width,
+        y: shipNy * this.level.height,
+      };
+      if (wasAim) {
+        this.state.trail = [];
+        this.updatePreview(true);
+      }
+    } else if (this.state.phase === "aim") {
+      this.updatePreview(true);
+    }
   }
 
   private loop() {
     this.resize();
+    this.clearSectorBannerIfDue();
     this.tickAsteroids();
     this.tickDamageFlash();
     if (this.state.phase === "flight") this.tickFlight();
