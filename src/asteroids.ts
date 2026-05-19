@@ -28,7 +28,7 @@ const DEFLECT_HEAD_ON_MAX = 0.7;
 /** Full deflect below this speed; never drops below DEFLECT_SPEED_FLOOR at max asteroid speed. */
 const DEFLECT_SPEED_SOFT = 55;
 const DEFLECT_SPEED_FLOOR = 0.58;
-const DEFLECT_ACCEL_MAX = 240;
+const DEFLECT_ACCEL_MAX = 161;
 const DEFLECT_SIZE_REF = 4.2;
 const DEFLECT_SWERVE = 0.48;
 
