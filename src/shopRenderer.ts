@@ -1,3 +1,4 @@
+import { drawShieldAura } from "./shipVisuals";
 import { computeShopLayout, type ShopLayout } from "./shopUi";
 import type { GameState, Level } from "./types";
 import type { ShipUpgrades, UpgradeId } from "./upgrades";
@@ -139,12 +140,11 @@ function drawModal(
     drawPaintBuyButton(ctx, layout.paintBuyButton, upgrades);
   }
 
-  drawPreviewShip(
-    ctx,
-    modal.x + modal.w - 52,
-    colorsY + swatchH + 18,
-    shipColor(upgrades, paintPreview)
-  );
+  const previewX = modal.x + modal.w - 52;
+  const previewY = colorsY + swatchH + 18;
+  const hull = shipColor(upgrades, paintPreview);
+  drawShieldAura(ctx, previewX, previewY, upgrades.shield, hull);
+  drawPreviewShip(ctx, previewX, previewY, hull);
 }
 
 function drawUpgradeCard(

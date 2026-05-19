@@ -85,5 +85,7 @@ export type GameState = {
   braking: boolean;
   thrustMultiplier: number;
   damageFlash: number;
+  hullHp: number;
+  hullMax: number;
   collectedArtifactIds: string[];
 };

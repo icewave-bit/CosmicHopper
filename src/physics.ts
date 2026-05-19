@@ -15,8 +15,11 @@ const PLANET_ORBIT_BAND = 3.6;
 const GRAVITY_ASSIST_TANGENT = 0.096;
 const GRAVITY_ASSIST_EXIT = 0.054;
 const BRAKE_DECEL = 220;
-const AUTO_STOP_SPEED = 14;
+const AUTO_STOP_SPEED = 4;
 const AUTO_STOP_TIME = 0.35;
+/** Below this speed, extra coast drag bleeds velocity faster (Km/s). */
+const LOW_SPEED_DRAG_THRESHOLD = 14;
+const LOW_SPEED_DRAG_EXTRA = 2.4;
 
 export type SimResult =
   | { type: "stopped"; position: Vec2; velocity: Vec2; trail: Vec2[] }
@@ -67,12 +70,19 @@ function planetHighSpeedPullScale(speed: number, orbitProx: number): number {
 
 /** Less drag near planets (especially when fast) so arcs can develop. */
 function flightDragFactor(pos: Vec2, vel: Vec2, bodies: Body[], dt: number): number {
+  const speed = len(vel);
+  let drag = DRAG;
+  if (speed < LOW_SPEED_DRAG_THRESHOLD) {
+    const t = 1 - speed / LOW_SPEED_DRAG_THRESHOLD;
+    drag += DRAG * LOW_SPEED_DRAG_EXTRA * t * t;
+  }
+
   const gap = nearestPlanetSurfaceGap(pos, bodies);
-  if (gap >= 180) return Math.exp(-DRAG * dt);
+  if (gap >= 180) return Math.exp(-drag * dt);
 
   let mult = 0.32 + 0.68 * (gap / 180);
-  if (len(vel) > 130 && gap < 130) mult *= 0.5;
-  return Math.exp(-DRAG * mult * dt);
+  if (speed > 130 && gap < 130) mult *= 0.5;
+  return Math.exp(-drag * mult * dt);
 }
 
 export type GravityAtOptions = {
@@ -247,10 +257,13 @@ export function stepPhysics(
   coastTimer: number,
   planetGravityMult = 1,
   autoStop = true,
-  planetAccelMult = 1
+  planetAccelMult = 1,
+  /** Real-time dt for auto-stop pause (defaults to dt). */
+  coastTimerDt?: number
 ): { pos: Vec2; vel: Vec2; coastTimer: number; outcome: StepOutcome } {
   const steps = flightSubsteps(pos, vel, bodies);
   const subDt = dt / steps;
+  const coastSubDt = (coastTimerDt ?? dt) / steps;
 
   let p = pos;
   let v = vel;
@@ -292,7 +305,7 @@ export function stepPhysics(
     if (last && autoStop) {
       const speed = len(v);
       if (speed < AUTO_STOP_SPEED) {
-        ct += subDt;
+        ct += coastSubDt;
         if (ct >= AUTO_STOP_TIME) {
           return { pos: p, vel: { x: 0, y: 0 }, coastTimer: 0, outcome: { type: "stopped" } };
         }
@@ -306,6 +319,8 @@ export function stepPhysics(
 }
 
 export const SIM_DT = 1 / 60;
+/** Ship flight integrator runs faster; asteroids and aim stay at 1×. */
+export const SHIP_FLIGHT_TIME_SCALE = 2;
 const SIM_MAX_STEPS = 6000;
 const TRAIL_MIN_DIST = 5;
 

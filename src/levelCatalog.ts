@@ -5,7 +5,7 @@ import type { Level } from "./types";
 
 export const HANDCRAFTED_COUNT = LEVELS.length;
 
-const CACHE_VERSION = 5;
+const CACHE_VERSION = 7;
 const cache = new Map<number, Level>();
 
 function withAsteroids(level: Level): Level {

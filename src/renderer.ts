@@ -5,12 +5,15 @@ import {
 } from "./artifacts";
 import { clamp, dist, len } from "./math";
 import type { Asteroid, GameState, Level, PreviewPath, Vec2, ViewportLayout } from "./types";
+import { drawHelpOverlay, drawHelpPrompt } from "./helpRenderer";
 import { drawShop } from "./shopRenderer";
-import {
-  engineThrustMult,
-  shipColor,
-  type ShipUpgrades,
-} from "./upgrades";
+import { drawShieldAura } from "./shipVisuals";
+import { shipColor, type ShipUpgrades } from "./upgrades";
+
+/** Speed samples for trend (~0.2s window at 60fps). */
+const SPEED_SAMPLE_COUNT = 12;
+/** Hide indicator when coasting below this (ship effectively stopped). */
+const SPEED_MOVING_MIN = 4;
 
 const COLORS = {
   bg: "#020208",
@@ -19,6 +22,7 @@ const COLORS = {
   phosphorDim: "rgba(57, 255, 20, 0.35)",
   phosphorFaint: "rgba(57, 255, 20, 0.12)",
   warn: "#ff6b35",
+  danger: "#ff3355",
   accent: "#00e5ff",
   credits: "#ffd447",
 };
@@ -27,6 +31,8 @@ export class Renderer {
   private ctx: CanvasRenderingContext2D;
   private stars: Vec2[] = [];
   private scanPhase = 0;
+  private speedSamples: number[] = [];
+  private lastSpeedTrend: "up" | "down" = "up";
   private layout: ViewportLayout = { width: 1, height: 1, scale: 1, offsetX: 0, offsetY: 0 };
 
   constructor(
@@ -57,6 +63,7 @@ export class Renderer {
     state: GameState,
     upgrades: ShipUpgrades,
     shopOpen: boolean,
+    helpOpen: boolean,
     pointer: Vec2 | null,
     preview: PreviewPath = { segments: [] },
     paintPreview: number | null = null
@@ -75,16 +82,24 @@ export class Renderer {
     ctx.fillRect(0, 0, w, h);
 
     this.drawGrid(w, h);
-    this.drawStars(w, h);
-    this.drawTrail(state.trail);
+    const hull = shipColor(upgrades, paintPreview);
+    const flightVel = state.phase === "flight" ? state.velocity : null;
+    this.drawStars(w, h, flightVel);
+    this.drawTrail(state.trail, flightVel, hull);
     this.drawBodies(level, state);
     if (level.asteroids?.length) this.drawAsteroids(level.asteroids);
+    drawShieldAura(ctx, state.ship.x, state.ship.y, upgrades.shield, hull, {
+      hitFlash: state.damageFlash,
+    });
+    if (flightVel) {
+      this.drawVelocityStreaks(state.ship, flightVel, hull);
+    }
     this.drawShip(
       state.ship,
       state.phase,
       state.velocity,
       state.damageFlash > 0,
-      shipColor(upgrades, paintPreview)
+      hull
     );
 
     if (state.phase === "aim" && state.aimPower > 1) {
@@ -99,6 +114,11 @@ export class Renderer {
 
     this.drawHud(level, state, upgrades);
     drawShop(ctx, level, state, upgrades, shopOpen, paintPreview);
+    if (helpOpen) {
+      drawHelpOverlay(ctx, w, h);
+    } else {
+      drawHelpPrompt(ctx, w, h);
+    }
     this.drawScanlines(w, h);
     this.drawVignette(w, h);
   }
@@ -122,28 +142,122 @@ export class Renderer {
     }
   }
 
-  private drawStars(w: number, h: number) {
+  private drawStars(w: number, h: number, velocity: Vec2 | null) {
     const { ctx } = this;
+    const speed = velocity ? len(velocity) : 0;
+    const streak = speed > 38;
+    const streakLen = streak ? Math.min(10, 2 + speed * 0.04) : 0;
+    const dx = streak ? (-velocity!.x / speed) * streakLen : 0;
+    const dy = streak ? (-velocity!.y / speed) * streakLen : 0;
+
     for (const s of this.stars) {
       const x = s.x * w;
       const y = s.y * h;
       const twinkle = 0.3 + 0.7 * Math.sin(Date.now() * 0.002 + s.x * 40);
-      ctx.fillStyle = `rgba(57, 255, 20, ${0.15 * twinkle})`;
-      ctx.fillRect(x, y, 1, 1);
+      const alpha = streak ? 0.08 + 0.12 * twinkle : 0.15 * twinkle;
+
+      if (streak) {
+        ctx.strokeStyle = `rgba(57, 255, 20, ${alpha})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + dx * (0.6 + s.y * 0.4), y + dy * (0.6 + s.y * 0.4));
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = `rgba(57, 255, 20, ${alpha})`;
+        ctx.fillRect(x, y, 1, 1);
+      }
     }
   }
 
-  private drawTrail(trail: Vec2[]) {
+  /** Recent path direction at the ship — stable when velocity swings after hits. */
+  private trailHeadTangent(trail: Vec2[]): { x: number; y: number } | null {
+    if (trail.length < 2) return null;
+    const head = trail[trail.length - 1]!;
+    const lookback = Math.min(8, trail.length - 1);
+    let ax = 0;
+    let ay = 0;
+    for (let i = trail.length - lookback - 1; i < trail.length - 1; i++) {
+      const p = trail[i]!;
+      ax += head.x - p.x;
+      ay += head.y - p.y;
+    }
+    const len = Math.hypot(ax, ay);
+    if (len < 0.8) return null;
+    return { x: ax / len, y: ay / len };
+  }
+
+  private drawTrail(trail: Vec2[], velocity: Vec2 | null, hullColor: string) {
     if (trail.length < 2) return;
     const { ctx } = this;
+    const speed = velocity ? len(velocity) : 0;
+    const head = trail[trail.length - 1]!;
+    const tail = trail[0]!;
+    const pathBack = this.trailHeadTangent(trail);
+
+    const g = ctx.createLinearGradient(tail.x, tail.y, head.x, head.y);
+    g.addColorStop(0, "rgba(57, 255, 20, 0.02)");
+    g.addColorStop(0.55, "rgba(57, 255, 20, 0.12)");
+    g.addColorStop(1, hullColor + "cc");
+
     ctx.beginPath();
     ctx.moveTo(trail[0].x, trail[0].y);
     for (let i = 1; i < trail.length; i++) ctx.lineTo(trail[i].x, trail[i].y);
-    ctx.strokeStyle = COLORS.phosphorDim;
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([4, 6]);
+
+    ctx.strokeStyle = g;
+    ctx.lineWidth = 1.2 + clamp(speed / 38, 0, 3.2);
+    if (speed < 45) {
+      ctx.setLineDash([Math.max(2, 8 - speed * 0.08), 6]);
+    } else {
+      ctx.setLineDash([]);
+    }
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
     ctx.stroke();
     ctx.setLineDash([]);
+
+    if (pathBack && speed > 20) {
+      const coreLen = clamp(speed * 0.22, 10, 48);
+      ctx.strokeStyle = hullColor + "99";
+      ctx.lineWidth = 1.5 + clamp(speed / 80, 0, 1.5);
+      ctx.beginPath();
+      ctx.moveTo(head.x, head.y);
+      ctx.lineTo(head.x - pathBack.x * coreLen, head.y - pathBack.y * coreLen);
+      ctx.stroke();
+    }
+  }
+
+  private drawVelocityStreaks(pos: Vec2, velocity: Vec2, hullColor: string) {
+    const speed = len(velocity);
+    if (speed < 22) return;
+
+    const { ctx } = this;
+    const angle = Math.atan2(velocity.y, velocity.x);
+    const backX = -Math.cos(angle);
+    const backY = -Math.sin(angle);
+    const perpX = -backY;
+    const perpY = backX;
+    const mainLen = clamp(speed * 0.32, 16, 58);
+    const count = Math.min(5, 2 + Math.floor(speed / 32));
+
+    ctx.lineCap = "round";
+    for (let i = 0; i < count; i++) {
+      const spread = (i - (count - 1) / 2) * (2.5 + speed * 0.02);
+      const len = mainLen * (0.55 + (i % 3) * 0.18);
+      const alpha = 0.08 + (i / count) * 0.14;
+      const ox = perpX * spread;
+      const oy = perpY * spread;
+
+      const hullA = Math.round(alpha * 200)
+        .toString(16)
+        .padStart(2, "0");
+      ctx.strokeStyle = i % 2 === 0 ? `rgba(0, 229, 255, ${alpha})` : `${hullColor}${hullA}`;
+      ctx.lineWidth = 1 + (i === count - 1 ? 1.2 : 0);
+      ctx.beginPath();
+      ctx.moveTo(pos.x + ox, pos.y + oy);
+      ctx.lineTo(pos.x + ox + backX * len, pos.y + oy + backY * len);
+      ctx.stroke();
+    }
   }
 
   private drawBodies(level: Level, state: GameState) {
@@ -283,6 +397,16 @@ export class Renderer {
     }
   }
 
+  private fillShipHull(ctx: CanvasRenderingContext2D) {
+    ctx.beginPath();
+    ctx.moveTo(6, 0);
+    ctx.lineTo(-4, -4);
+    ctx.lineTo(-2, 0);
+    ctx.lineTo(-4, 4);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   private drawShip(
     pos: Vec2,
     phase: string,
@@ -291,24 +415,36 @@ export class Renderer {
     hullColor: string
   ) {
     const { ctx } = this;
+    const speed = phase === "flight" ? len(velocity) : 0;
     const pulse = phase === "flight" ? 0.6 + 0.4 * Math.sin(Date.now() * 0.02) : 1;
     const angle =
-      phase === "flight" && len(velocity) > 2
-        ? Math.atan2(velocity.y, velocity.x)
-        : 0;
+      phase === "flight" && speed > 2 ? Math.atan2(velocity.y, velocity.x) : 0;
+    const fill = damaged ? COLORS.warn : hullColor;
+    const stretch = 1 + clamp(speed / 120, 0, 0.22);
+
     ctx.save();
     ctx.translate(pos.x, pos.y);
     ctx.rotate(angle);
-    ctx.fillStyle = damaged ? COLORS.warn : hullColor;
-    ctx.shadowColor = hullColor;
-    ctx.shadowBlur = 8 * pulse;
-    ctx.beginPath();
-    ctx.moveTo(6, 0);
-    ctx.lineTo(-4, -4);
-    ctx.lineTo(-2, 0);
-    ctx.lineTo(-4, 4);
-    ctx.closePath();
-    ctx.fill();
+
+    if (speed > 26) {
+      const ghosts = Math.min(4, 1 + Math.floor(speed / 38));
+      for (let i = ghosts; i >= 1; i--) {
+        const t = i / (ghosts + 1);
+        const offset = speed * 0.022 * t;
+        ctx.save();
+        ctx.translate(-offset, 0);
+        ctx.globalAlpha = 0.1 * (1 - t * 0.65);
+        ctx.fillStyle = fill;
+        this.fillShipHull(ctx);
+        ctx.restore();
+      }
+    }
+
+    ctx.scale(stretch, 1);
+    ctx.fillStyle = fill;
+    ctx.shadowColor = fill;
+    ctx.shadowBlur = (8 + clamp(speed * 0.14, 0, 22)) * pulse;
+    this.fillShipHull(ctx);
     ctx.shadowBlur = 0;
     ctx.restore();
   }
@@ -377,6 +513,76 @@ export class Renderer {
     }
   }
 
+  private speedBarColor(speed: number): string {
+    if (speed > 110) return COLORS.danger;
+    if (speed >= 86) return COLORS.warn;
+    if (speed >= 55) return COLORS.accent;
+    return COLORS.phosphor;
+  }
+
+  private drawSpeedArrow(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    up: boolean,
+    color: string
+  ) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    if (up) {
+      ctx.moveTo(cx, cy - 4);
+      ctx.lineTo(cx - 4, cy + 3);
+      ctx.lineTo(cx + 4, cy + 3);
+    } else {
+      ctx.moveTo(cx, cy + 4);
+      ctx.lineTo(cx - 4, cy - 3);
+      ctx.lineTo(cx + 4, cy - 3);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  private resetSpeedTrend() {
+    this.speedSamples = [];
+    this.lastSpeedTrend = "up";
+  }
+
+  /** Always up or down — compares recent speed to older samples in the buffer. */
+  private updateSpeedTrend(speed: number): "up" | "down" {
+    this.speedSamples.push(speed);
+    if (this.speedSamples.length > SPEED_SAMPLE_COUNT) {
+      this.speedSamples.shift();
+    }
+
+    const n = this.speedSamples.length;
+    if (n < 3) return this.lastSpeedTrend;
+
+    const mid = Math.max(1, Math.floor(n / 2));
+    let oldSum = 0;
+    let newSum = 0;
+    for (let i = 0; i < mid; i++) oldSum += this.speedSamples[i]!;
+    for (let i = mid; i < n; i++) newSum += this.speedSamples[i]!;
+    const oldAvg = oldSum / mid;
+    const newAvg = newSum / (n - mid);
+
+    this.lastSpeedTrend = newAvg >= oldAvg ? "up" : "down";
+    return this.lastSpeedTrend;
+  }
+
+  private drawSpeedHud(ctx: CanvasRenderingContext2D, x: number, y: number, speed: number) {
+    const font = '"Press Start 2P", monospace';
+    const rounded = Math.round(speed);
+    const color = this.speedBarColor(speed);
+    const up = this.updateSpeedTrend(speed) === "up";
+
+    this.drawSpeedArrow(ctx, x + 4, y + 5, up, color);
+
+    ctx.font = `8px ${font}`;
+    ctx.textAlign = "left";
+    ctx.fillStyle = color;
+    ctx.fillText(`${rounded} Km/s`, x + 16, y + 8);
+  }
+
   private drawPowerBar(level: Level, power: number, thrustMultiplier: number) {
     const { ctx } = this;
     const w = 200;
@@ -427,6 +633,27 @@ export class Renderer {
     );
   }
 
+  private drawHullBar(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    state: GameState
+  ) {
+    const segW = 14;
+    const segH = 8;
+    const gap = 4;
+
+    for (let i = 0; i < state.hullMax; i++) {
+      const sx = x + i * (segW + gap);
+      const intact = i < state.hullHp;
+      ctx.fillStyle = intact ? "rgba(57, 255, 20, 0.35)" : "rgba(0, 0, 0, 0.45)";
+      ctx.fillRect(sx, y, segW, segH);
+      ctx.strokeStyle = intact ? COLORS.phosphor : COLORS.warn;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx, y, segW, segH);
+    }
+  }
+
   private drawHud(level: Level, state: GameState, upgrades: ShipUpgrades) {
     const { ctx } = this;
     const font = '"Press Start 2P", monospace';
@@ -440,14 +667,6 @@ export class Renderer {
     ctx.fillStyle = COLORS.credits;
     ctx.fillText(`CREDITS ${upgrades.credits}`, 16, 40);
 
-    ctx.fillStyle = COLORS.phosphorDim;
-    const eng = engineThrustMult(upgrades.engine);
-    ctx.fillText(
-      `ENG×${eng.toFixed(2)} SHD${upgrades.shield} SLNG${upgrades.stabilizer} CPL${upgrades.coupling}`,
-      16,
-      52
-    );
-
     ctx.textAlign = "right";
     ctx.fillText(`JUMPS ${state.jumps}`, level.width - 16, 24);
     ctx.fillText(`PAR ${level.par}`, level.width - 16, 40);
@@ -457,34 +676,24 @@ export class Renderer {
       ctx.fillText(`BEST ${state.bestJumps}`, level.width - 16, 56);
     }
 
+    this.drawHullBar(ctx, 16, 62, state);
+
+    const inFlight = state.phase === "flight";
+    const speed = len(state.velocity);
+    if (inFlight && speed > SPEED_MOVING_MIN) {
+      this.drawSpeedHud(ctx, 16, 74, speed);
+    } else if (!inFlight) {
+      this.resetSpeedTrend();
+    }
+
     if (state.thrustMultiplier < 1) {
       ctx.fillStyle = COLORS.warn;
       ctx.textAlign = "left";
-      ctx.fillText("HULL STRESSED", 16, 64);
-    }
-
-    ctx.textAlign = "center";
-    if (state.phase === "aim") {
-      ctx.fillStyle = COLORS.phosphorDim;
-      ctx.font = `8px ${font}`;
-      ctx.fillText(
-        state.jumps === 0
-          ? "OPEN SHIP BAY · UPGRADE · THEN LAUNCH"
-          : "FLY TO ARTIFACTS · COLLECT CREDITS",
-        level.width / 2,
-        level.height - 80
-      );
-      ctx.fillText("DRAG FROM SHIP · RELEASE TO JUMP", level.width / 2, level.height - 68);
-      ctx.fillText("N = NEXT · G = NEW SECTOR · R = RESTART", level.width / 2, level.height - 56);
-    }
-
-    if (state.phase === "flight") {
-      ctx.fillStyle = COLORS.phosphorDim;
-      ctx.font = `8px ${font}`;
-      ctx.fillText("HOLD SPACE — BRAKE TO A HALT", level.width / 2, level.height - 12);
+      ctx.fillText("THRUST DAMAGED", 16, inFlight && speed > SPEED_MOVING_MIN ? 104 : 88);
     }
 
     if (state.message) {
+      ctx.textAlign = "center";
       ctx.font = `12px ${font}`;
       ctx.fillStyle =
         state.phase === "won" ? COLORS.phosphor : state.phase === "lost" ? COLORS.warn : COLORS.phosphorDim;

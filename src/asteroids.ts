@@ -1,20 +1,36 @@
 import { dist, sub } from "./math";
 import { G } from "./physics";
 import type { Asteroid, Body, Level, Vec2 } from "./types";
+import { shieldDeflectRadius, shieldDeflectStrength } from "./upgrades";
 
 export const THRUST_PENALTY = 0.25;
 export const SPEED_PENALTY = 0.25;
 const COURSE_DEV_MIN = 0.4;
 const COURSE_DEV_MAX = 1.15;
 
-/** Stronger than ship gravity so bends are visible at asteroid speeds. */
-const ASTEROID_G_MULT = 5;
-const ASTEROID_SOFTEN_K = 0.12;
-const ASTEROID_MAX_SPEED = 105;
+/** Planet pull on asteroids — weak; heavy planets use compressed mass. */
+const ASTEROID_G_MULT = 1.05;
+const ASTEROID_SOFTEN_K = 0.18;
+const ASTEROID_PLANET_MASS_REF = 12000;
+const ASTEROID_ORBIT_BAND = 2.8;
+/** Tangential flight in the band — gravity scaled down to limit capture orbits. */
+const ASTEROID_ORBIT_GRAV_FADE = 0.82;
+const ASTEROID_MAX_SPEED = 52;
 const ASTEROID_SURFACE_PAD = 1;
-const ASTEROID_BOUNCE_REST = 0.92;
-const ASTEROID_BOUNCE_EXTRA_PAD = 4;
-const SHIP_HIT_RADIUS = 5;
+const ASTEROID_BOUNCE_REST = 0.58;
+const ASTEROID_BOUNCE_EXTRA_PAD = 3;
+const ASTEROID_ASTEROID_REST = 0.55;
+const ASTEROID_ASTEROID_PAD = 0.5;
+export const SHIP_HIT_RADIUS = 5;
+
+/** Head-on approach above this (0–1) — shield does not deflect. */
+const DEFLECT_HEAD_ON_MAX = 0.7;
+/** Full deflect below this speed; never drops below DEFLECT_SPEED_FLOOR at max asteroid speed. */
+const DEFLECT_SPEED_SOFT = 55;
+const DEFLECT_SPEED_FLOOR = 0.58;
+const DEFLECT_ACCEL_MAX = 240;
+const DEFLECT_SIZE_REF = 4.2;
+const DEFLECT_SWERVE = 0.48;
 
 const ASTEROID_TINT_COUNT = 6;
 
@@ -60,16 +76,39 @@ function nearestPlanetGap(pos: Vec2, bodies: Body[]): number {
   return min;
 }
 
-function planetGravityAccel(pos: Vec2, bodies: Body[]): Vec2 {
+function asteroidPlanetMass(mass: number): number {
+  const ratio = mass / ASTEROID_PLANET_MASS_REF;
+  return ASTEROID_PLANET_MASS_REF * ratio ** 0.42;
+}
+
+function planetGravityAccel(pos: Vec2, vel: Vec2, bodies: Body[]): Vec2 {
   let ax = 0;
   let ay = 0;
+  const speed = Math.hypot(vel.x, vel.y);
+
   for (const b of bodies) {
     if (b.kind !== "planet") continue;
     const d = sub(b, pos);
     const soften2 = (b.radius * ASTEROID_SOFTEN_K) ** 2;
     const r2 = d.x * d.x + d.y * d.y + soften2;
     const r = Math.sqrt(r2);
-    const f = (G * ASTEROID_G_MULT * b.mass) / r2;
+    let f = (G * ASTEROID_G_MULT * asteroidPlanetMass(b.mass)) / r2;
+
+    const gap = r - b.radius;
+    const band = b.radius * ASTEROID_ORBIT_BAND;
+    if (speed > 6 && gap < band) {
+      const ux = d.x / r;
+      const uy = d.y / r;
+      const vOut = vel.x * ux + vel.y * uy;
+      const vTanSq = Math.max(0, speed * speed - vOut * vOut);
+      const tangential = vTanSq / (speed * speed);
+      if (tangential > 0.45) {
+        const bandT = 1 - gap / band;
+        const fade = ASTEROID_ORBIT_GRAV_FADE * bandT * tangential;
+        f *= Math.max(0.12, 1 - fade);
+      }
+    }
+
     ax += (f * d.x) / r;
     ay += (f * d.y) / r;
   }
@@ -115,19 +154,19 @@ function resolvePlanetCollisions(a: Asteroid, bodies: Body[]) {
     a.y = b.y + ny * (minDist + ASTEROID_BOUNCE_EXTRA_PAD);
 
     if (vDotN < 0) {
-      const rest = ASTEROID_BOUNCE_REST + Math.min(0.28, impactSpeed / 100);
+      const rest = ASTEROID_BOUNCE_REST + Math.min(0.18, impactSpeed / 120);
       a.vx -= (1 + rest) * vDotN * nx;
       a.vy -= (1 + rest) * vDotN * ny;
 
       const tx = -ny;
       const ty = nx;
-      const slide = (Math.random() - 0.5) * impactSpeed * 0.65;
+      const slide = (Math.random() - 0.5) * Math.max(impactSpeed, 14) * 0.4;
       a.vx += tx * slide;
       a.vy += ty * slide;
     }
 
     const outward = a.vx * nx + a.vy * ny;
-    const needOut = Math.max(26, impactSpeed * 0.62);
+    const needOut = Math.max(18, impactSpeed * 0.42);
     if (outward < needOut) {
       a.vx += nx * (needOut - outward);
       a.vy += ny * (needOut - outward);
@@ -143,10 +182,61 @@ function clampAsteroidSpeed(a: Asteroid) {
   }
 }
 
+function asteroidMass(a: Asteroid): number {
+  return a.radius * a.radius;
+}
+
+function resolveAsteroidPair(a: Asteroid, b: Asteroid) {
+  let dx = b.x - a.x;
+  let dy = b.y - a.y;
+  let distCenter = Math.hypot(dx, dy);
+  const minDist = a.radius + b.radius + ASTEROID_ASTEROID_PAD;
+
+  if (distCenter < 0.001) {
+    const angle = Math.random() * Math.PI * 2;
+    dx = Math.cos(angle);
+    dy = Math.sin(angle);
+    distCenter = 0.001;
+  }
+
+  if (distCenter >= minDist) return;
+
+  const nx = dx / distCenter;
+  const ny = dy / distCenter;
+  const overlap = minDist - distCenter;
+  const ma = asteroidMass(a);
+  const mb = asteroidMass(b);
+  const total = ma + mb;
+
+  a.x -= (nx * overlap * mb) / total;
+  a.y -= (ny * overlap * mb) / total;
+  b.x += (nx * overlap * ma) / total;
+  b.y += (ny * overlap * ma) / total;
+
+  const rvx = b.vx - a.vx;
+  const rvy = b.vy - a.vy;
+  const relNormal = rvx * nx + rvy * ny;
+  if (relNormal >= 0) return;
+
+  const impulse = (-(1 + ASTEROID_ASTEROID_REST) * relNormal) / (1 / ma + 1 / mb);
+  a.vx -= (impulse * nx) / ma;
+  a.vy -= (impulse * ny) / ma;
+  b.vx += (impulse * nx) / mb;
+  b.vy += (impulse * ny) / mb;
+}
+
+function resolveAsteroidCollisions(asteroids: Asteroid[]) {
+  for (let i = 0; i < asteroids.length; i++) {
+    for (let j = i + 1; j < asteroids.length; j++) {
+      resolveAsteroidPair(asteroids[i]!, asteroids[j]!);
+    }
+  }
+}
+
 export function spawnAsteroids(level: Level): Asteroid[] {
   const seed = level.seed ?? hashSeed(level.id);
   const rng = mulberry32(seed ^ 0xa57e);
-  const count = 10 + Math.floor(rng() * 8);
+  const count = Math.max(4, Math.round((10 + Math.floor(rng() * 8)) * 0.45));
   const asteroids: Asteroid[] = [];
 
   for (let i = 0; i < count; i++) {
@@ -154,7 +244,7 @@ export function spawnAsteroids(level: Level): Asteroid[] {
     for (let attempt = 0; attempt < 40; attempt++) {
       const radius = 3 + rng() * 3;
       const angle = rng() * Math.PI * 2;
-      const speed = 28 + rng() * 52;
+      const speed = (28 + rng() * 52) / 2;
       const candidate: Asteroid = {
         id: `a${i}`,
         x: 40 + rng() * (level.width - 80),
@@ -181,26 +271,104 @@ export function spawnAsteroids(level: Level): Asteroid[] {
   return asteroids;
 }
 
+function clamp01(x: number): number {
+  return Math.max(0, Math.min(1, x));
+}
+
+function smooth01(edge0: number, edge1: number, x: number): number {
+  const t = clamp01((x - edge0) / (edge1 - edge0));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Repulsive shield field — real velocity change. Active whenever shieldLevel >= 10.
+ * Slow, small, grazing rocks curve away; fast / head-on / large rocks mostly ignore it.
+ */
+export function applyShieldDeflection(
+  asteroids: Asteroid[],
+  ship: Vec2,
+  shieldLevel: number,
+  dt: number
+) {
+  const strength = shieldDeflectStrength(shieldLevel);
+  if (strength <= 0) return;
+
+  const fieldR = shieldDeflectRadius(shieldLevel);
+
+  for (const a of asteroids) {
+    const dx = a.x - ship.x;
+    const dy = a.y - ship.y;
+    const d = Math.hypot(dx, dy);
+    const reach = fieldR + a.radius;
+    if (d >= reach || d < 0.001) continue;
+
+    const nx = dx / d;
+    const ny = dy / d;
+
+    const speed = Math.hypot(a.vx, a.vy);
+    if (speed < 0.4) continue;
+
+    const toShipX = -nx;
+    const toShipY = -ny;
+    const headOn = (a.vx * toShipX + a.vy * toShipY) / speed;
+    if (headOn > DEFLECT_HEAD_ON_MAX) continue;
+
+    const graze = 1 - smooth01(0, DEFLECT_HEAD_ON_MAX, headOn);
+    const slow =
+      speed <= DEFLECT_SPEED_SOFT
+        ? 1
+        : DEFLECT_SPEED_FLOOR +
+          (1 - DEFLECT_SPEED_FLOOR) *
+            (1 - smooth01(DEFLECT_SPEED_SOFT, ASTEROID_MAX_SPEED, speed));
+
+    const size = 1 / (1 + a.radius / DEFLECT_SIZE_REF);
+    const hitDist = SHIP_HIT_RADIUS + a.radius;
+    const proximity = smooth01(reach, hitDist, d) ** 0.72;
+
+    const push =
+      strength * graze * slow * size * proximity * DEFLECT_ACCEL_MAX * dt;
+
+    a.vx += nx * push;
+    a.vy += ny * push;
+
+    const tx = -ny;
+    const ty = nx;
+    const side = Math.sign(a.vx * tx + a.vy * ty) || 1;
+    a.vx += tx * push * DEFLECT_SWERVE * side;
+    a.vy += ty * push * DEFLECT_SWERVE * side;
+
+    clampAsteroidSpeed(a);
+  }
+}
+
 export function stepAsteroids(
   asteroids: Asteroid[],
   bodies: Body[],
   bounds: { width: number; height: number },
   dt: number
 ) {
-  const { width: w, height: h } = bounds;
-  for (const a of asteroids) {
-    const steps = asteroidSubsteps(a, bodies);
-    const subDt = dt / steps;
+  if (!asteroids.length) return;
 
-    for (let i = 0; i < steps; i++) {
-      const g = planetGravityAccel(a, bodies);
+  const { width: w, height: h } = bounds;
+  let steps = 1;
+  for (const a of asteroids) {
+    steps = Math.max(steps, asteroidSubsteps(a, bodies));
+  }
+  const subDt = dt / steps;
+
+  for (let s = 0; s < steps; s++) {
+    for (const a of asteroids) {
+      const g = planetGravityAccel(a, { x: a.vx, y: a.vy }, bodies);
       a.vx += g.x * subDt;
       a.vy += g.y * subDt;
       a.x += a.vx * subDt;
       a.y += a.vy * subDt;
       resolvePlanetCollisions(a, bodies);
     }
+    resolveAsteroidCollisions(asteroids);
+  }
 
+  for (const a of asteroids) {
     clampAsteroidSpeed(a);
     a.rotation += a.spin * dt;
 

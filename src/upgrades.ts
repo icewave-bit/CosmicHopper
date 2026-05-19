@@ -15,8 +15,10 @@ const STORAGE_KEY = "blackhole-ship-upgrades-v6";
 export const PAINT_COST = 15;
 
 export const UPGRADE_MAX = 20;
+/** Shield deflect field unlocks at this level (levels 10–20 scale strength). */
+export const SHIELD_DEFLECT_MIN_LEVEL = 10;
 /** Test / dev starting wallet (new game + reset). */
-export const TEST_STARTING_CREDITS = 12000;
+export const TEST_STARTING_CREDITS = 20000;
 
 const MAX_ENGINE_MULT = 0.775;
 const MAX_ASTEROID_MITIGATION = 0.95;
@@ -176,6 +178,21 @@ export function asteroidMitigation(shieldLevel: number): number {
   return lerp(MIN_ASTEROID_MITIGATION, MAX_ASTEROID_MITIGATION, shieldLevel);
 }
 
+/** 0 below lv10, ~1 at lv20 — repulsive deflect strength. */
+export function shieldDeflectStrength(shieldLevel: number): number {
+  if (shieldLevel < SHIELD_DEFLECT_MIN_LEVEL) return 0;
+  const span = UPGRADE_MAX - SHIELD_DEFLECT_MIN_LEVEL + 1;
+  const t = (Math.min(shieldLevel, UPGRADE_MAX) - SHIELD_DEFLECT_MIN_LEVEL + 1) / span;
+  return 1 - (1 - t) ** 1.2;
+}
+
+/** World-space radius of the deflect field (matches shield aura scale). */
+export function shieldDeflectRadius(shieldLevel: number): number {
+  if (shieldLevel < SHIELD_DEFLECT_MIN_LEVEL) return 0;
+  const s = shieldDeflectStrength(shieldLevel);
+  return 18 + s * 24;
+}
+
 /** Thrust & speed kept after a hit (0–1). Weak engine = milder penalty; shield stacks on top. */
 export function asteroidThrustRetention(engineLevel: number, shieldLevel: number): number {
   const shieldMit = asteroidMitigation(shieldLevel);
@@ -229,6 +246,9 @@ export function upgradePreview(id: UpgradeId, level: number): UpgradeStatPreview
   }
 
   if (id === "shield") {
+    if (level >= SHIELD_DEFLECT_MIN_LEVEL - 1 && !maxed) {
+      return { level, maxed, cost, bumpLine: "BONUS ABILITY" };
+    }
     const cur = asteroidMitigation(level) * 100;
     const nxt = asteroidMitigation(level + 1) * 100;
     return {

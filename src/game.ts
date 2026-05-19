@@ -1,14 +1,17 @@
 import { tryHarvestArtifact } from "./artifacts";
 import {
   applyAsteroidImpact,
+  applyShieldDeflection,
   hitAsteroid,
   removeAsteroid,
   stepAsteroids,
 } from "./asteroids";
+
+const SHIP_HULL_MAX = 4;
 import { computeViewportLayout, screenToWorld, worldToScreen } from "./fitLevel";
 import { createRandomLevel, resolveLevel } from "./levelCatalog";
 import { clamp, len, sub } from "./math";
-import { SIM_DT, stepPhysics } from "./physics";
+import { SHIP_FLIGHT_TIME_SCALE, SIM_DT, stepPhysics } from "./physics";
 import { simulatePreviewPath } from "./preview";
 import { Renderer } from "./renderer";
 import { computeShopLayout, hitTestShop } from "./shopUi";
@@ -20,8 +23,8 @@ import {
   loadUpgrades,
   resetUpgrades,
   saveUpgrades,
-  TEST_STARTING_CREDITS,
   stabilizerGravityMult,
+  TEST_STARTING_CREDITS,
   planetAccelMult,
   isPaintOwned,
   tryApplyOwnedPaint,
@@ -84,6 +87,7 @@ export class Game {
     return u;
   })();
   private shopOpen = false;
+  private helpOpen = false;
   private paintPreview: number | null = null;
   private readonly onViewportResize = () => this.resize();
 
@@ -136,6 +140,8 @@ export class Game {
       braking: false,
       thrustMultiplier: 1,
       damageFlash: 0,
+      hullHp: SHIP_HULL_MAX,
+      hullMax: SHIP_HULL_MAX,
       collectedArtifactIds: [],
     };
   }
@@ -173,6 +179,7 @@ export class Game {
     this.upgrades = resetUpgrades();
     this.paintPreview = null;
     this.state.thrustMultiplier = 1;
+    this.state.hullHp = SHIP_HULL_MAX;
     this.state.message = "UPGRADES RESET";
     this.updatePreview(true);
   }
@@ -263,6 +270,7 @@ export class Game {
     const toWorld = (e: PointerEvent): Vec2 => screenToWorld(toScreen(e), this.layout);
 
     this.canvas.addEventListener("pointerdown", (e) => {
+      if (this.helpOpen) return;
       if (this.state.phase !== "aim") return;
       const p = toWorld(e);
       if (this.handleShopPointer(p)) {
@@ -276,6 +284,7 @@ export class Game {
     });
 
     this.canvas.addEventListener("pointermove", (e) => {
+      if (this.helpOpen) return;
       const screen = toScreen(e);
       this.pointer = toWorld(e);
       if (this.shopOpen && this.canUseShop()) return;
@@ -283,6 +292,7 @@ export class Game {
     });
 
     this.canvas.addEventListener("pointerup", (e) => {
+      if (this.helpOpen) return;
       this.pointer = toWorld(e);
       if (this.shopOpen && this.canUseShop()) return;
       if (!this.dragging) return;
@@ -307,9 +317,19 @@ export class Game {
       if (e.code === "KeyN") this.nextLevel();
       if (e.code === "KeyG") this.generateLevel();
 
-      if (e.code === "Escape" && this.shopOpen) {
-        this.closeShop();
-        return;
+      if (e.code === "Escape") {
+        if (this.helpOpen) {
+          this.helpOpen = false;
+          return;
+        }
+        if (this.shopOpen) {
+          this.closeShop();
+          return;
+        }
+      }
+
+      if (e.code === "KeyH" && !e.repeat) {
+        this.helpOpen = !this.helpOpen;
       }
 
       if (e.code === "Space") {
@@ -393,9 +413,12 @@ export class Game {
     const asteroids = this.level.asteroids;
     if (!asteroids?.length) return;
     stepAsteroids(asteroids, this.level.bodies, this.level, SIM_DT);
+    applyShieldDeflection(asteroids, this.state.ship, this.upgrades.shield, SIM_DT);
   }
 
   private checkAsteroidCollision() {
+    if (this.state.phase === "won" || this.state.phase === "lost") return;
+
     const asteroids = this.level.asteroids;
     if (!asteroids?.length) return;
 
@@ -407,17 +430,28 @@ export class Game {
     const keep = asteroidDamagedThrustMultiplier(this.upgrades.engine, this.upgrades.shield);
     this.state.thrustMultiplier = keep;
     this.state.damageFlash = 1.5;
+    this.state.hullHp = Math.max(0, this.state.hullHp - 1);
     const lossPct = Math.round((1 - keep) * 100);
 
     if (this.state.phase === "flight") {
       this.state.velocity = applyAsteroidImpact(this.state.velocity, keep);
     }
 
+    if (this.state.hullHp <= 0) {
+      this.state.phase = "lost";
+      this.state.message = "HULL DESTROYED";
+      this.state.velocity = { x: 0, y: 0 };
+      this.braking = false;
+      this.state.braking = false;
+      return;
+    }
+
     if (this.state.phase === "flight" || this.state.phase === "aim") {
+      const hull = `HULL ${this.state.hullHp}/${this.state.hullMax}`;
       this.state.message =
         this.state.phase === "flight"
-          ? `ASTEROID — THRUST & SPEED -${lossPct}%`
-          : `ASTEROID HIT — THRUST -${lossPct}%`;
+          ? `ASTEROID — ${hull} · -${lossPct}% THRUST`
+          : `ASTEROID HIT — ${hull} · -${lossPct}% THRUST`;
     }
   }
 
@@ -426,7 +460,8 @@ export class Game {
     this.state.damageFlash -= SIM_DT;
     if (
       this.state.damageFlash <= 0 &&
-      this.state.message.startsWith("ASTEROID HIT")
+      (this.state.message.startsWith("ASTEROID HIT") ||
+        this.state.message.startsWith("ASTEROID —"))
     ) {
       this.state.message = "";
     }
@@ -438,12 +473,13 @@ export class Game {
       this.state.velocity,
       this.level.bodies,
       { w: this.level.width, h: this.level.height },
-      SIM_DT,
+      SIM_DT * SHIP_FLIGHT_TIME_SCALE,
       this.braking,
       this.coastTimer,
       this.planetGravityMult(),
       true,
-      this.planetCouplingMult()
+      this.planetCouplingMult(),
+      SIM_DT
     );
 
     this.state.ship = step.pos;
@@ -549,6 +585,7 @@ export class Game {
       this.state,
       this.upgrades,
       this.shopOpen,
+      this.helpOpen,
       this.pointer,
       this.previewPath,
       this.shopOpen ? this.paintPreview : null
