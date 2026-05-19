@@ -1,3 +1,4 @@
+import { defaultArtifact } from "./artifacts";
 import { dist, len, sub } from "./math";
 import { simulateTrajectory } from "./physics";
 import type { Body, Level, Vec2 } from "./types";
@@ -5,7 +6,7 @@ import type { Body, Level, Vec2 } from "./types";
 const WIDTH = 800;
 const HEIGHT = 600;
 const MARGIN = 56;
-const POWER_SCALE = 2.5;
+const POWER_SCALE = 1.95;
 
 const PLANET_COLORS = [
   "#3a8f5c",
@@ -156,6 +157,7 @@ function tryGenerate(seed: number, displayIndex: number): Level | null {
         mass,
         kind: "planet",
         color: PLANET_COLORS[i % PLANET_COLORS.length]!,
+        artifact: defaultArtifact(rng, 10 + Math.floor(rng() * 18)),
       };
 
       if (!inBounds(candidate, candidate.radius, w, h)) continue;
@@ -214,7 +216,16 @@ export function generateLevel(options: GenerateOptions): Level {
     seed: baseSeed,
     generated: true,
     bodies: [
-      { id: "p1", x: 380, y: 300, radius: 38, mass: 12000, kind: "planet", color: "#3a8f5c" },
+      {
+        id: "p1",
+        x: 380,
+        y: 300,
+        radius: 38,
+        mass: 12000,
+        kind: "planet",
+        color: "#3a8f5c",
+        artifact: { angle: 0.6, surface: 0.85, value: 15 },
+      },
       {
         id: "bh",
         x: 680,

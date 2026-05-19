@@ -7,7 +7,9 @@ export function simulatePreviewPath(
   power: number,
   powerScale: number,
   bodies: Body[],
-  bounds: { w: number; h: number }
+  bounds: { w: number; h: number },
+  planetGravityMult = 1,
+  planetAccelMult = 1
 ): PreviewPath {
   const speed = power * powerScale; // powerScale includes thrust penalty when damaged
   const velocity = {
@@ -15,7 +17,14 @@ export function simulatePreviewPath(
     y: Math.sin(aimAngle) * speed,
   };
 
-  const result = simulateTrajectory(start, velocity, bodies, bounds);
+  const result = simulateTrajectory(
+    start,
+    velocity,
+    bodies,
+    bounds,
+    planetGravityMult,
+    planetAccelMult
+  );
 
   let outcome: PreviewSegment["outcome"] = "timeout";
   if (result.type === "captured") outcome = "captured";

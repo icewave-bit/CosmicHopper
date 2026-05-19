@@ -1,5 +1,16 @@
+import {
+  ARTIFACT_HARVEST_RADIUS,
+  ARTIFACT_VISUAL_RADIUS,
+  artifactWorldPos,
+} from "./artifacts";
 import { clamp, dist, len } from "./math";
-import type { Asteroid, Body, GameState, Level, PreviewPath, Vec2, ViewportLayout } from "./types";
+import type { Asteroid, GameState, Level, PreviewPath, Vec2, ViewportLayout } from "./types";
+import { drawShop } from "./shopRenderer";
+import {
+  engineThrustMult,
+  shipColor,
+  type ShipUpgrades,
+} from "./upgrades";
 
 const COLORS = {
   bg: "#020208",
@@ -9,6 +20,7 @@ const COLORS = {
   phosphorFaint: "rgba(57, 255, 20, 0.12)",
   warn: "#ff6b35",
   accent: "#00e5ff",
+  credits: "#ffd447",
 };
 
 export class Renderer {
@@ -40,7 +52,15 @@ export class Renderer {
     }));
   }
 
-  draw(level: Level, state: GameState, pointer: Vec2 | null, preview: PreviewPath = { segments: [] }) {
+  draw(
+    level: Level,
+    state: GameState,
+    upgrades: ShipUpgrades,
+    shopOpen: boolean,
+    pointer: Vec2 | null,
+    preview: PreviewPath = { segments: [] },
+    paintPreview: number | null = null
+  ) {
     const { ctx, dpr, layout } = this;
     const { width: vw, height: vh, scale, offsetX, offsetY } = layout;
     const { width: w, height: h } = level;
@@ -57,9 +77,15 @@ export class Renderer {
     this.drawGrid(w, h);
     this.drawStars(w, h);
     this.drawTrail(state.trail);
-    this.drawBodies(level.bodies);
+    this.drawBodies(level, state);
     if (level.asteroids?.length) this.drawAsteroids(level.asteroids);
-    this.drawShip(state.ship, state.phase, state.velocity, state.damageFlash > 0);
+    this.drawShip(
+      state.ship,
+      state.phase,
+      state.velocity,
+      state.damageFlash > 0,
+      shipColor(upgrades, paintPreview)
+    );
 
     if (state.phase === "aim" && state.aimPower > 1) {
       this.drawPreview(preview);
@@ -71,7 +97,8 @@ export class Renderer {
       this.drawBrakeIndicator(state);
     }
 
-    this.drawHud(level, state);
+    this.drawHud(level, state, upgrades);
+    drawShop(ctx, level, state, upgrades, shopOpen, paintPreview);
     this.drawScanlines(w, h);
     this.drawVignette(w, h);
   }
@@ -119,9 +146,12 @@ export class Renderer {
     ctx.setLineDash([]);
   }
 
-  private drawBodies(bodies: Body[]) {
+  private drawBodies(level: Level, state: GameState) {
     const { ctx } = this;
-    for (const b of bodies) {
+    const collected = new Set(state.collectedArtifactIds);
+    const t = Date.now() * 0.004;
+
+    for (const b of level.bodies) {
       if (b.kind === "blackhole") {
         const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.radius * 2.2);
         g.addColorStop(0, "rgba(120, 80, 255, 0.5)");
@@ -156,38 +186,110 @@ export class Renderer {
       ctx.lineWidth = 1;
       ctx.stroke();
 
-      if (b.kind === "planet") {
-        ctx.fillStyle = COLORS.phosphorFaint;
+      if (b.kind === "planet" && b.artifact) {
+        const pos = artifactWorldPos(b);
+        if (!pos) continue;
+
+        const done = collected.has(b.id);
+        const pulse = 0.85 + 0.15 * Math.sin(t * 2 + b.artifact.angle);
+
+        if (!done) {
+          ctx.strokeStyle = `rgba(255, 212, 71, ${0.35 + 0.2 * pulse})`;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([2, 3]);
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, ARTIFACT_HARVEST_RADIUS, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        const ag = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, ARTIFACT_VISUAL_RADIUS * 2);
+        ag.addColorStop(0, done ? "rgba(57, 255, 20, 0.35)" : "rgba(255, 212, 71, 0.9)");
+        ag.addColorStop(1, "transparent");
+        ctx.fillStyle = ag;
         ctx.beginPath();
-        ctx.arc(b.x - b.radius * 0.25, b.y - b.radius * 0.2, b.radius * 0.15, 0, Math.PI * 2);
+        ctx.arc(pos.x, pos.y, ARTIFACT_VISUAL_RADIUS * 2 * pulse, 0, Math.PI * 2);
         ctx.fill();
+
+        ctx.fillStyle = done ? COLORS.phosphorDim : COLORS.credits;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, ARTIFACT_VISUAL_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = COLORS.phosphor;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        const font = '"Press Start 2P", monospace';
+        ctx.font = `7px ${font}`;
+        ctx.textAlign = "center";
+        ctx.fillStyle = done ? COLORS.phosphorDim : COLORS.credits;
+        ctx.fillText(done ? "—" : `${b.artifact.value}CR`, pos.x, pos.y - 14);
       }
     }
   }
 
   private drawAsteroids(asteroids: Asteroid[]) {
     const { ctx } = this;
+    const palettes = [
+      { fill: "#6a6a72", stroke: "rgba(255, 107, 53, 0.6)" },
+      { fill: "#5a6878", stroke: "rgba(140, 200, 255, 0.55)" },
+      { fill: "#7a6a58", stroke: "rgba(255, 190, 90, 0.55)" },
+      { fill: "#62686a", stroke: "rgba(180, 255, 200, 0.45)" },
+      { fill: "#706070", stroke: "rgba(255, 120, 200, 0.5)" },
+      { fill: "#4a5248", stroke: "rgba(200, 220, 160, 0.5)" },
+    ];
+
     for (const a of asteroids) {
+      const pal = palettes[a.tint % palettes.length]!;
+      const radii = a.shapeRadii;
+      const n = radii.length;
+      const phase = a.rotation * 0.35;
+
       ctx.save();
       ctx.translate(a.x, a.y);
       ctx.rotate(a.rotation);
-      ctx.fillStyle = "#6a6a72";
-      ctx.strokeStyle = "rgba(255, 107, 53, 0.55)";
-      ctx.lineWidth = 1;
-      const r = a.radius;
+
       ctx.beginPath();
-      ctx.moveTo(r, 0);
-      ctx.lineTo(-r * 0.6, r * 0.7);
-      ctx.lineTo(-r * 0.4, -r * 0.8);
-      ctx.lineTo(r * 0.5, -r * 0.5);
+      for (let i = 0; i < n; i++) {
+        const t = (i / n) * Math.PI * 2 + phase;
+        const rr = a.radius * radii[i]!;
+        const px = Math.cos(t) * rr;
+        const py = Math.sin(t) * rr;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
       ctx.closePath();
+
+      ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
       ctx.fill();
+      ctx.translate(1.5, 1.5);
+      ctx.fillStyle = pal.fill;
+      ctx.fill();
+      ctx.translate(-1.5, -1.5);
+
+      ctx.strokeStyle = pal.stroke;
+      ctx.lineWidth = a.radius > 4.5 ? 1.25 : 1;
       ctx.stroke();
+
+      if (a.radius > 3.8) {
+        ctx.fillStyle = "rgba(255, 255, 255, 0.12)";
+        const craterR = a.radius * (0.12 + (radii[0]! % 0.15));
+        ctx.beginPath();
+        ctx.arc(a.radius * 0.22, -a.radius * 0.18, craterR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
       ctx.restore();
     }
   }
 
-  private drawShip(pos: Vec2, phase: string, velocity: Vec2, damaged: boolean) {
+  private drawShip(
+    pos: Vec2,
+    phase: string,
+    velocity: Vec2,
+    damaged: boolean,
+    hullColor: string
+  ) {
     const { ctx } = this;
     const pulse = phase === "flight" ? 0.6 + 0.4 * Math.sin(Date.now() * 0.02) : 1;
     const angle =
@@ -197,8 +299,8 @@ export class Renderer {
     ctx.save();
     ctx.translate(pos.x, pos.y);
     ctx.rotate(angle);
-    ctx.fillStyle = damaged ? COLORS.warn : COLORS.phosphor;
-    ctx.shadowColor = COLORS.phosphor;
+    ctx.fillStyle = damaged ? COLORS.warn : hullColor;
+    ctx.shadowColor = hullColor;
     ctx.shadowBlur = 8 * pulse;
     ctx.beginPath();
     ctx.moveTo(6, 0);
@@ -241,7 +343,7 @@ export class Renderer {
     const { ctx } = this;
 
     const dragDist = dist(ship, target);
-    const maxLen = 100;
+    const maxLen = 100 / this.layout.scale;
     const lineEnd =
       dragDist <= maxLen
         ? target
@@ -325,7 +427,7 @@ export class Renderer {
     );
   }
 
-  private drawHud(level: Level, state: GameState) {
+  private drawHud(level: Level, state: GameState, upgrades: ShipUpgrades) {
     const { ctx } = this;
     const font = '"Press Start 2P", monospace';
 
@@ -333,6 +435,18 @@ export class Renderer {
     ctx.fillStyle = COLORS.phosphor;
     ctx.textAlign = "left";
     ctx.fillText(level.name, 16, 24);
+
+    ctx.font = `8px ${font}`;
+    ctx.fillStyle = COLORS.credits;
+    ctx.fillText(`CREDITS ${upgrades.credits}`, 16, 40);
+
+    ctx.fillStyle = COLORS.phosphorDim;
+    const eng = engineThrustMult(upgrades.engine);
+    ctx.fillText(
+      `ENG×${eng.toFixed(2)} SHD${upgrades.shield} SLNG${upgrades.stabilizer} CPL${upgrades.coupling}`,
+      16,
+      52
+    );
 
     ctx.textAlign = "right";
     ctx.fillText(`JUMPS ${state.jumps}`, level.width - 16, 24);
@@ -346,16 +460,22 @@ export class Renderer {
     if (state.thrustMultiplier < 1) {
       ctx.fillStyle = COLORS.warn;
       ctx.textAlign = "left";
-      ctx.font = `8px ${font}`;
-      ctx.fillText("THRUST 25%", 16, 40);
+      ctx.fillText("HULL STRESSED", 16, 64);
     }
 
     ctx.textAlign = "center";
     if (state.phase === "aim") {
       ctx.fillStyle = COLORS.phosphorDim;
       ctx.font = `8px ${font}`;
-      ctx.fillText("DRAG FROM SHIP · RELEASE TO JUMP", level.width / 2, level.height - 80);
-      ctx.fillText("N = NEXT · G = NEW SECTOR · R = RESTART", level.width / 2, level.height - 68);
+      ctx.fillText(
+        state.jumps === 0
+          ? "OPEN SHIP BAY · UPGRADE · THEN LAUNCH"
+          : "FLY TO ARTIFACTS · COLLECT CREDITS",
+        level.width / 2,
+        level.height - 80
+      );
+      ctx.fillText("DRAG FROM SHIP · RELEASE TO JUMP", level.width / 2, level.height - 68);
+      ctx.fillText("N = NEXT · G = NEW SECTOR · R = RESTART", level.width / 2, level.height - 56);
     }
 
     if (state.phase === "flight") {

@@ -17,6 +17,7 @@ export const LEVELS: Level[] = [
         mass: 12000,
         kind: "planet",
         color: "#3a8f5c",
+        artifact: { angle: -0.4, surface: 0.88, value: 20 },
       },
       {
         id: "bh",
@@ -45,6 +46,7 @@ export const LEVELS: Level[] = [
         mass: 14000,
         kind: "planet",
         color: "#c45c3a",
+        artifact: { angle: 1.2, surface: 0.85, value: 18 },
       },
       {
         id: "p2",
@@ -54,6 +56,7 @@ export const LEVELS: Level[] = [
         mass: 9000,
         kind: "planet",
         color: "#3a7fc4",
+        artifact: { angle: -1.8, surface: 0.82, value: 15 },
       },
       {
         id: "p3",
@@ -63,6 +66,7 @@ export const LEVELS: Level[] = [
         mass: 11000,
         kind: "planet",
         color: "#8f8f3a",
+        artifact: { angle: 0.5, surface: 0.86, value: 15 },
       },
       {
         id: "bh",
@@ -91,6 +95,7 @@ export const LEVELS: Level[] = [
         mass: 10000,
         kind: "planet",
         color: "#3a8f8f",
+        artifact: { angle: 0.9, surface: 0.84, value: 12 },
       },
       {
         id: "p2",
@@ -100,6 +105,7 @@ export const LEVELS: Level[] = [
         mass: 16000,
         kind: "planet",
         color: "#c43a6b",
+        artifact: { angle: -0.2, surface: 0.87, value: 22 },
       },
       {
         id: "p3",
@@ -109,6 +115,7 @@ export const LEVELS: Level[] = [
         mass: 10000,
         kind: "planet",
         color: "#3a8f8f",
+        artifact: { angle: 2.4, surface: 0.83, value: 12 },
       },
       {
         id: "p4",
@@ -118,6 +125,7 @@ export const LEVELS: Level[] = [
         mass: 7000,
         kind: "planet",
         color: "#8f6b3a",
+        artifact: { angle: -1.1, surface: 0.8, value: 10 },
       },
       {
         id: "p5",
@@ -127,6 +135,7 @@ export const LEVELS: Level[] = [
         mass: 7000,
         kind: "planet",
         color: "#8f6b3a",
+        artifact: { angle: 1.6, surface: 0.81, value: 10 },
       },
       {
         id: "bh",

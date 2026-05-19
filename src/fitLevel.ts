@@ -1,45 +1,32 @@
-import type { Asteroid, Body, Level, Vec2 } from "./types";
+import type { Vec2, ViewportLayout } from "./types";
 
-function scaleVec(v: Vec2, sx: number, sy: number): Vec2 {
-  return { x: v.x * sx, y: v.y * sy };
-}
-
-function scaleBody(b: Body, sx: number, sy: number): Body {
-  const rScale = Math.min(sx, sy);
+/** Letterbox the fixed game world into the browser viewport (uniform scale). */
+export function computeViewportLayout(
+  viewportW: number,
+  viewportH: number,
+  worldW: number,
+  worldH: number
+): ViewportLayout {
+  const scale = Math.min(viewportW / worldW, viewportH / worldH);
   return {
-    ...b,
-    x: b.x * sx,
-    y: b.y * sy,
-    radius: b.radius * rScale,
-    mass: b.mass * sx * sy,
+    width: viewportW,
+    height: viewportH,
+    scale,
+    offsetX: (viewportW - worldW * scale) / 2,
+    offsetY: (viewportH - worldH * scale) / 2,
   };
 }
 
-function scaleAsteroid(a: Asteroid, sx: number, sy: number): Asteroid {
-  const rScale = Math.min(sx, sy);
+export function screenToWorld(screen: Vec2, layout: ViewportLayout): Vec2 {
   return {
-    ...a,
-    x: a.x * sx,
-    y: a.y * sy,
-    vx: a.vx * sx,
-    vy: a.vy * sy,
-    radius: a.radius * rScale,
+    x: (screen.x - layout.offsetX) / layout.scale,
+    y: (screen.y - layout.offsetY) / layout.scale,
   };
 }
 
-/** Map a level from its authored size to the viewport (fills screen, no crop). */
-export function fitLevel(base: Level, width: number, height: number): Level {
-  if (base.width === width && base.height === height) return base;
-
-  const sx = width / base.width;
-  const sy = height / base.height;
-
+export function worldToScreen(world: Vec2, layout: ViewportLayout): Vec2 {
   return {
-    ...base,
-    width,
-    height,
-    start: scaleVec(base.start, sx, sy),
-    bodies: base.bodies.map((b) => scaleBody(b, sx, sy)),
-    asteroids: base.asteroids?.map((a) => scaleAsteroid(a, sx, sy)),
+    x: world.x * layout.scale + layout.offsetX,
+    y: world.y * layout.scale + layout.offsetY,
   };
 }

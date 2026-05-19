@@ -1,5 +1,13 @@
 export type Vec2 = { x: number; y: number };
 
+export type PlanetArtifact = {
+  /** Radians on the planet disc. */
+  angle: number;
+  /** Distance from planet center as a fraction of planet.radius (on the surface). */
+  surface: number;
+  value: number;
+};
+
 export type ViewportLayout = {
   width: number;
   height: number;
@@ -16,6 +24,7 @@ export type Body = {
   mass: number;
   kind: "planet" | "blackhole";
   color: string;
+  artifact?: PlanetArtifact;
 };
 
 export type Asteroid = {
@@ -27,6 +36,10 @@ export type Asteroid = {
   radius: number;
   rotation: number;
   spin: number;
+  /** Radius multipliers per vertex (irregular silhouette). */
+  shapeRadii: number[];
+  /** Palette index for fill / stroke. */
+  tint: number;
 };
 
 export type Level = {
@@ -72,4 +85,5 @@ export type GameState = {
   braking: boolean;
   thrustMultiplier: number;
   damageFlash: number;
+  collectedArtifactIds: string[];
 };

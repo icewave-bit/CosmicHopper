@@ -1,19 +1,39 @@
+import { tryHarvestArtifact } from "./artifacts";
 import {
   applyAsteroidImpact,
   hitAsteroid,
   removeAsteroid,
   stepAsteroids,
-  THRUST_PENALTY,
 } from "./asteroids";
-import { fitLevel } from "./fitLevel";
+import { computeViewportLayout, screenToWorld, worldToScreen } from "./fitLevel";
 import { createRandomLevel, resolveLevel } from "./levelCatalog";
 import { clamp, len, sub } from "./math";
 import { SIM_DT, stepPhysics } from "./physics";
 import { simulatePreviewPath } from "./preview";
 import { Renderer } from "./renderer";
+import { computeShopLayout, hitTestShop } from "./shopUi";
 import type { GameState, Level, PreviewPath, Vec2, ViewportLayout } from "./types";
+import {
+  addCredits,
+  asteroidDamagedThrustMultiplier,
+  engineThrustMult,
+  loadUpgrades,
+  resetUpgrades,
+  saveUpgrades,
+  TEST_STARTING_CREDITS,
+  stabilizerGravityMult,
+  planetAccelMult,
+  isPaintOwned,
+  tryApplyOwnedPaint,
+  tryBuyPaint,
+  tryPurchase,
+  type ShipUpgrades,
+  type UpgradeId,
+  UPGRADE_DEFS,
+  SHIP_COLORS,
+} from "./upgrades";
 
-const POWER_SCALE = 2.5;
+const POWER_SCALE = 1.95;
 const MIN_DRAG = 18;
 const MAX_DRAG = 130;
 
@@ -54,6 +74,17 @@ export class Game {
   private raf = 0;
   private resizeObserver: ResizeObserver;
   private layout: ViewportLayout = { width: 1, height: 1, scale: 1, offsetX: 0, offsetY: 0 };
+  private upgrades: ShipUpgrades = (() => {
+    const u = loadUpgrades();
+    if (u.credits !== TEST_STARTING_CREDITS) {
+      const topped = { ...u, credits: TEST_STARTING_CREDITS };
+      saveUpgrades(topped);
+      return topped;
+    }
+    return u;
+  })();
+  private shopOpen = false;
+  private paintPreview: number | null = null;
   private readonly onViewportResize = () => this.resize();
 
   constructor(private container: HTMLElement) {
@@ -81,31 +112,15 @@ export class Game {
     };
   }
 
-  private syncLevelToViewport(base: Level) {
+  private syncViewportLayout() {
     const { width, height } = this.viewportSize();
-    this.level = fitLevel(base, width, height);
-    this.layout = { width, height, scale: 1, offsetX: 0, offsetY: 0 };
+    this.layout = computeViewportLayout(width, height, this.level.width, this.level.height);
     this.renderer.setLayout(this.layout);
   }
 
-  private remapState(from: Level, to: Level) {
-    const sx = to.width / from.width;
-    const sy = to.height / from.height;
-    if (sx === 1 && sy === 1) return;
-
-    this.state.ship = { x: this.state.ship.x * sx, y: this.state.ship.y * sy };
-    this.state.velocity = {
-      x: this.state.velocity.x * sx,
-      y: this.state.velocity.y * sy,
-    };
-    this.state.trail = this.state.trail.map((p) => ({
-      x: p.x * sx,
-      y: p.y * sy,
-    }));
-  }
-
   private createInitialState(levelIndex: number): GameState {
-    this.syncLevelToViewport(resolveLevel(levelIndex));
+    this.level = resolveLevel(levelIndex);
+    this.syncViewportLayout();
     const level = this.level;
     return {
       levelIndex,
@@ -121,15 +136,123 @@ export class Game {
       braking: false,
       thrustMultiplier: 1,
       damageFlash: 0,
+      collectedArtifactIds: [],
     };
   }
 
+  private collectedSet(): Set<string> {
+    return new Set(this.state.collectedArtifactIds);
+  }
+
+  private planetGravityMult(): number {
+    return stabilizerGravityMult(this.upgrades.stabilizer);
+  }
+
+  private planetCouplingMult(): number {
+    return planetAccelMult(this.upgrades.coupling);
+  }
+
+  private checkHarvest() {
+    const collected = this.collectedSet();
+    for (const body of this.level.bodies) {
+      const value = tryHarvestArtifact(this.state.ship, body, collected);
+      if (value === null) continue;
+
+      this.upgrades = addCredits(this.upgrades, value);
+      this.state.collectedArtifactIds.push(body.id);
+      collected.add(body.id);
+      this.state.message = `+${value} CR`;
+    }
+  }
+
+  private canUseShop(): boolean {
+    return this.state.phase === "aim" && this.state.jumps === 0;
+  }
+
+  private resetAllUpgrades() {
+    this.upgrades = resetUpgrades();
+    this.paintPreview = null;
+    this.state.thrustMultiplier = 1;
+    this.state.message = "UPGRADES RESET";
+    this.updatePreview(true);
+  }
+
+  private buyUpgrade(id: UpgradeId) {
+    const next = tryPurchase(id, this.upgrades);
+    if (!next) {
+      this.state.message = "CANNOT BUY";
+      return;
+    }
+    this.upgrades = next;
+    const def = UPGRADE_DEFS.find((d) => d.id === id)!;
+    this.state.message = `${def.name} → LV ${next[id]}`;
+    this.updatePreview(true);
+  }
+
+  private closeShop() {
+    this.shopOpen = false;
+    this.paintPreview = null;
+  }
+
+  private selectPaintColor(index: number) {
+    if (isPaintOwned(this.upgrades, index)) {
+      this.paintPreview = null;
+      const next = tryApplyOwnedPaint(index, this.upgrades);
+      if (!next || next.paint === this.upgrades.paint) return;
+      this.upgrades = next;
+      this.state.message = `HULL ${SHIP_COLORS[index]!.label}`;
+      this.updatePreview(true);
+      return;
+    }
+    this.paintPreview = index;
+    this.state.message = "PREVIEW";
+  }
+
+  private buyPreviewPaint() {
+    if (this.paintPreview === null) return;
+    const index = this.paintPreview;
+    const next = tryBuyPaint(index, this.upgrades);
+    if (!next) {
+      this.state.message = "CANNOT PAINT";
+      return;
+    }
+    this.upgrades = next;
+    this.paintPreview = null;
+    this.state.message = `HULL ${SHIP_COLORS[index]!.label}`;
+    this.updatePreview(true);
+  }
+
+  private handleShopPointer(p: Vec2): boolean {
+    if (!this.canUseShop()) return false;
+
+    const layout = computeShopLayout(
+      this.level.width,
+      this.level.height,
+      this.shopOpen,
+      this.upgrades,
+      this.paintPreview
+    );
+    const hit = hitTestShop(layout, p, true);
+    if (!hit) return this.shopOpen;
+
+    if (hit.type === "open") this.shopOpen = true;
+    else if (hit.type === "close") this.closeShop();
+    else if (hit.type === "reset") this.resetAllUpgrades();
+    else if (hit.type === "buy") this.buyUpgrade(hit.id);
+    else if (hit.type === "color") this.selectPaintColor(hit.index);
+    else if (hit.type === "buyPaint") this.buyPreviewPaint();
+
+    return true;
+  }
+
   private effectivePowerScale(): number {
-    return POWER_SCALE * this.state.thrustMultiplier;
+    return (
+      POWER_SCALE * engineThrustMult(this.upgrades.engine) * this.state.thrustMultiplier
+    );
   }
 
   private bindEvents() {
-    const toWorld = (e: PointerEvent): Vec2 => {
+    const toScreen = (e: PointerEvent): Vec2 => {
       const rect = this.canvas.getBoundingClientRect();
       return {
         x: e.clientX - rect.left,
@@ -137,23 +260,33 @@ export class Game {
       };
     };
 
+    const toWorld = (e: PointerEvent): Vec2 => screenToWorld(toScreen(e), this.layout);
+
     this.canvas.addEventListener("pointerdown", (e) => {
       if (this.state.phase !== "aim") return;
+      const p = toWorld(e);
+      if (this.handleShopPointer(p)) {
+        this.pointer = p;
+        return;
+      }
       this.dragging = true;
-      this.pointer = toWorld(e);
-      this.updateAim(this.pointer);
+      this.pointer = p;
+      this.updateAim(toScreen(e));
       this.canvas.setPointerCapture(e.pointerId);
     });
 
     this.canvas.addEventListener("pointermove", (e) => {
+      const screen = toScreen(e);
       this.pointer = toWorld(e);
-      if (this.dragging && this.state.phase === "aim") this.updateAim(this.pointer);
+      if (this.shopOpen && this.canUseShop()) return;
+      if (this.dragging && this.state.phase === "aim") this.updateAim(screen);
     });
 
     this.canvas.addEventListener("pointerup", (e) => {
+      this.pointer = toWorld(e);
+      if (this.shopOpen && this.canUseShop()) return;
       if (!this.dragging) return;
       this.dragging = false;
-      this.pointer = toWorld(e);
       if (this.state.phase === "aim") {
         this.updatePreview(true);
         if (this.state.aimPower > 4) this.launch();
@@ -173,6 +306,11 @@ export class Game {
       if (e.code === "KeyR") this.restartLevel();
       if (e.code === "KeyN") this.nextLevel();
       if (e.code === "KeyG") this.generateLevel();
+
+      if (e.code === "Escape" && this.shopOpen) {
+        this.closeShop();
+        return;
+      }
 
       if (e.code === "Space") {
         e.preventDefault();
@@ -195,12 +333,19 @@ export class Game {
     });
   }
 
-  private updateAim(p: Vec2) {
-    const dir = sub(p, this.state.ship);
-    const dragDistance = len(dir);
-    if (dragDistance < 6) return;
+  private updateAim(screenP: Vec2) {
+    const worldP = screenToWorld(screenP, this.layout);
+    const dir = sub(worldP, this.state.ship);
+    const worldLen = len(dir);
+    if (worldLen < 1e-6) return;
+
+    const screenShip = worldToScreen(this.state.ship, this.layout);
+    const screenDrag = len(sub(screenP, screenShip));
+    if (screenDrag < 6) return;
+
     this.state.aimAngle = Math.atan2(dir.y, dir.x);
-    this.state.aimPower = dragToPower(dragDistance);
+    this.state.aimPower = dragToPower(screenDrag);
+    this.pointer = worldP;
     this.updatePreview();
   }
 
@@ -220,11 +365,14 @@ export class Game {
       this.state.aimPower,
       this.effectivePowerScale(),
       this.level.bodies,
-      { w: this.level.width, h: this.level.height }
+      { w: this.level.width, h: this.level.height },
+      this.planetGravityMult(),
+      this.planetCouplingMult()
     );
   }
 
   private launch() {
+    this.closeShop();
     const speed = this.state.aimPower * this.effectivePowerScale();
     this.state.velocity = {
       x: Math.cos(this.state.aimAngle) * speed,
@@ -256,18 +404,20 @@ export class Game {
 
     removeAsteroid(asteroids, hit);
 
-    this.state.thrustMultiplier = THRUST_PENALTY;
+    const keep = asteroidDamagedThrustMultiplier(this.upgrades.engine, this.upgrades.shield);
+    this.state.thrustMultiplier = keep;
     this.state.damageFlash = 1.5;
+    const lossPct = Math.round((1 - keep) * 100);
 
     if (this.state.phase === "flight") {
-      this.state.velocity = applyAsteroidImpact(this.state.velocity);
+      this.state.velocity = applyAsteroidImpact(this.state.velocity, keep);
     }
 
     if (this.state.phase === "flight" || this.state.phase === "aim") {
       this.state.message =
         this.state.phase === "flight"
-          ? "ASTEROID — THRUST & SPEED -75%"
-          : "ASTEROID HIT — THRUST -75%";
+          ? `ASTEROID — THRUST & SPEED -${lossPct}%`
+          : `ASTEROID HIT — THRUST -${lossPct}%`;
     }
   }
 
@@ -290,7 +440,10 @@ export class Game {
       { w: this.level.width, h: this.level.height },
       SIM_DT,
       this.braking,
-      this.coastTimer
+      this.coastTimer,
+      this.planetGravityMult(),
+      true,
+      this.planetCouplingMult()
     );
 
     this.state.ship = step.pos;
@@ -304,6 +457,7 @@ export class Game {
     }
 
     this.checkAsteroidCollision();
+    this.checkHarvest();
 
     if (step.outcome.type === "flying") return;
 
@@ -340,6 +494,7 @@ export class Game {
   }
 
   private restartLevel() {
+    this.closeShop();
     this.state = this.createInitialState(this.state.levelIndex);
     this.previewPath = { segments: [] };
     this.braking = false;
@@ -348,12 +503,14 @@ export class Game {
   }
 
   private nextLevel() {
+    this.closeShop();
     this.state = this.createInitialState(this.state.levelIndex + 1);
     this.previewPath = { segments: [] };
     this.updatePreview();
   }
 
   private generateLevel() {
+    this.closeShop();
     const { index } = createRandomLevel();
     this.state = this.createInitialState(index);
     this.previewPath = { segments: [] };
@@ -368,43 +525,14 @@ export class Game {
     }
   }
 
-  private remapAsteroids(from: Level, to: Level) {
-    const prev = from.asteroids;
-    const next = to.asteroids;
-    if (!prev?.length || !next?.length) return;
-
-    const sx = to.width / from.width;
-    const sy = to.height / from.height;
-    for (let i = 0; i < next.length; i++) {
-      const live = prev[i];
-      if (!live) continue;
-      const a = next[i]!;
-      a.x = live.x * sx;
-      a.y = live.y * sy;
-      a.vx = live.vx * sx;
-      a.vy = live.vy * sy;
-      a.rotation = live.rotation;
-    }
-  }
-
   private resize() {
     const { width, height } = this.viewportSize();
     if (width <= 0 || height <= 0) return;
     if (width === this.layout.width && height === this.layout.height) return;
 
-    const base = resolveLevel(this.state.levelIndex);
-    const prev = this.level;
-    const next = fitLevel(base, width, height);
-
-    if (prev) {
-      this.remapAsteroids(prev, next);
-      this.remapState(prev, next);
-      if (this.state.phase === "aim") this.updatePreview(true);
-    }
-
-    this.level = next;
-    this.layout = { width, height, scale: 1, offsetX: 0, offsetY: 0 };
+    this.layout = computeViewportLayout(width, height, this.level.width, this.level.height);
     this.renderer.setLayout(this.layout);
+    if (this.state.phase === "aim") this.updatePreview(true);
   }
 
   private loop() {
@@ -412,8 +540,19 @@ export class Game {
     this.tickAsteroids();
     this.tickDamageFlash();
     if (this.state.phase === "flight") this.tickFlight();
-    else if (this.state.phase === "aim") this.checkAsteroidCollision();
-    this.renderer.draw(this.level, this.state, this.pointer, this.previewPath);
+    else if (this.state.phase === "aim") {
+      this.checkAsteroidCollision();
+      this.checkHarvest();
+    }
+    this.renderer.draw(
+      this.level,
+      this.state,
+      this.upgrades,
+      this.shopOpen,
+      this.pointer,
+      this.previewPath,
+      this.shopOpen ? this.paintPreview : null
+    );
     this.raf = requestAnimationFrame(() => this.loop());
   }
 
