@@ -35,11 +35,11 @@ export function computeShopLayout(
   upgrades: ShipUpgrades,
   paintPreview: number | null
 ): ShopLayout {
-  const openW = 200;
-  const openH = 36;
+  const openW = 88;
+  const openH = 24;
   const openButton: Rect = {
-    x: levelW / 2 - openW / 2,
-    y: levelH - openH - 96,
+    x: 16,
+    y: levelH - openH - 24,
     w: openW,
     h: openH,
   };

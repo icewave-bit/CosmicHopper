@@ -320,7 +320,7 @@ export function stepPhysics(
 
 export const SIM_DT = 1 / 60;
 /** Ship flight integrator runs faster; asteroids and aim stay at 1×. */
-export const SHIP_FLIGHT_TIME_SCALE = 2;
+export const SHIP_FLIGHT_TIME_SCALE = 3;
 const SIM_MAX_STEPS = 6000;
 const TRAIL_MIN_DIST = 5;
 

@@ -57,13 +57,15 @@ function drawOpenButton(ctx: CanvasRenderingContext2D, layout: ShopLayout) {
   ctx.fillStyle = `rgba(57, 255, 20, ${0.12 * pulse})`;
   ctx.fillRect(b.x, b.y, b.w, b.h);
   ctx.strokeStyle = COLORS.phosphor;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1;
   ctx.strokeRect(b.x, b.y, b.w, b.h);
 
-  ctx.font = `11px ${font}`;
+  ctx.font = `8px ${font}`;
   ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
   ctx.fillStyle = COLORS.phosphor;
-  ctx.fillText("◆  SHIP BAY  ◆", b.x + b.w / 2, b.y + b.h / 2 + 4);
+  ctx.fillText("SHOP", b.x + b.w / 2, b.y + b.h / 2);
+  ctx.textBaseline = "alphabetic";
 }
 
 function drawModal(
@@ -89,7 +91,7 @@ function drawModal(
   ctx.font = `14px ${font}`;
   ctx.textAlign = "left";
   ctx.fillStyle = COLORS.phosphor;
-  ctx.fillText("SHIP BAY", modal.x + 16, modal.y + 30);
+  ctx.fillText("SHOP", modal.x + 16, modal.y + 30);
 
   ctx.font = `10px ${font}`;
   ctx.fillStyle = COLORS.credits;
