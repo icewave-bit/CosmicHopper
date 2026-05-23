@@ -14,6 +14,7 @@ function helpLines(): HelpLine[] {
     { text: "N — NEXT SECTOR", dim: true },
     { text: "G — NEW RANDOM SECTOR", dim: true },
     { text: "R — RESTART SECTOR", dim: true },
+    { text: "SHOP → SET — CAMERA (OVERVIEW OR PAN)", dim: true },
   ];
 }
 

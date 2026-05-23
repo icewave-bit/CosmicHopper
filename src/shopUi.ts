@@ -1,3 +1,4 @@
+import type { CameraMode } from "./settings";
 import type { ShipUpgrades } from "./upgrades";
 import { isPaintOwned, SHIP_COLORS, UPGRADE_DEFS } from "./upgrades";
 import type { UpgradeId } from "./upgrades";
@@ -10,16 +11,23 @@ export type ShopHit =
   | { type: "open" }
   | { type: "close" }
   | { type: "reset" }
+  | { type: "gear" }
+  | { type: "settingsBack" }
+  | { type: "cameraMode"; mode: CameraMode }
   | { type: "buy"; id: UpgradeId }
   | { type: "color"; index: number }
   | { type: "buyPaint" };
 
 export type ShopLayout = {
   open: boolean;
+  settingsOpen: boolean;
   modal: Rect;
   openButton: Rect;
   closeButton: Rect;
   resetButton: Rect;
+  gearButton: Rect;
+  settingsBackButton: Rect | null;
+  cameraModeButtons: { mode: CameraMode; bounds: Rect }[];
   upgradeCards: { id: UpgradeId; buy: Rect; bounds: Rect }[];
   colorSwatches: { index: number; bounds: Rect }[];
   paintBuyButton: Rect | null;
@@ -33,6 +41,7 @@ export function computeShopLayout(
   viewportW: number,
   viewportH: number,
   shopOpen: boolean,
+  settingsOpen: boolean,
   upgrades: ShipUpgrades,
   paintPreview: number | null
 ): ShopLayout {
@@ -72,6 +81,35 @@ export function computeShopLayout(
     w: TOUCH_MIN,
     h: TOUCH_MIN,
   };
+
+  const gearButton: Rect = {
+    x: modal.x + modal.w - TOUCH_MIN * 3 - 32,
+    y: modal.y + 12,
+    w: TOUCH_MIN,
+    h: TOUCH_MIN,
+  };
+
+  const settingsBackButton: Rect | null = settingsOpen
+    ? {
+        x: modal.x + 12,
+        y: modal.y + 12,
+        w: TOUCH_MIN + 16,
+        h: TOUCH_MIN,
+      }
+    : null;
+
+  const settingsBlockH = 120;
+  const cameraModeButtons: { mode: CameraMode; bounds: Rect }[] = settingsOpen
+    ? (["overview", "pan"] as const).map((mode, i) => ({
+        mode,
+        bounds: {
+          x: modal.x + 24,
+          y: modal.y + header + 36 + i * (settingsBlockH + 12),
+          w: modal.w - 48,
+          h: settingsBlockH,
+        },
+      }))
+    : [];
 
   const cardsTop = modal.y + header;
   const cardW = modal.w - 24;
@@ -130,10 +168,14 @@ export function computeShopLayout(
 
   return {
     open: shopOpen,
+    settingsOpen,
     modal,
     openButton,
     closeButton,
     resetButton,
+    gearButton,
+    settingsBackButton,
+    cameraModeButtons,
     upgradeCards,
     colorSwatches,
     paintBuyButton,
@@ -148,7 +190,19 @@ export function hitTestShop(layout: ShopLayout, p: Vec2, canUseShop: boolean): S
   }
 
   if (contains(layout.closeButton, p)) return { type: "close" };
+  if (layout.settingsBackButton && contains(layout.settingsBackButton, p)) {
+    return { type: "settingsBack" };
+  }
+  if (!layout.settingsOpen && contains(layout.gearButton, p)) return { type: "gear" };
   if (contains(layout.resetButton, p)) return { type: "reset" };
+
+  if (layout.settingsOpen) {
+    for (const btn of layout.cameraModeButtons) {
+      if (contains(btn.bounds, p)) return { type: "cameraMode", mode: btn.mode };
+    }
+    if (contains(layout.modal, p)) return null;
+    return { type: "close" };
+  }
 
   if (layout.paintBuyButton && contains(layout.paintBuyButton, p)) {
     return { type: "buyPaint" };

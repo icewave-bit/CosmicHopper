@@ -20,7 +20,9 @@ const TIER_BOUNDARIES = [0, 10, 20];
 /** Below this min viewport edge (px), cap range so bodies stay readable on phones. */
 const PLAYABILITY_MIN_VIEWPORT = 380;
 
-export function sectorProfileForLevelIndex(index: number): SectorProfile {
+/** Campaign sector depth (1-based), not content index. */
+export function sectorProfileForSectorLevel(sectorLevel: number): SectorProfile {
+  const index = Math.max(0, sectorLevel - 1);
   let tier = 0;
   for (let i = TIER_BOUNDARIES.length - 1; i >= 0; i--) {
     if (index >= TIER_BOUNDARIES[i]!) {

@@ -8,9 +8,28 @@ import {
 } from "./asteroids";
 
 const SHIP_HULL_MAX = 4;
+import {
+  applyCameraToLayout,
+  initAimCamera,
+  tickCamera,
+  type CameraFocus,
+} from "./camera";
 import { computeViewportLayout, screenToWorld, worldToScreen } from "./fitLevel";
 import { createRandomLevel, resolveLevel } from "./levelCatalog";
-import { sectorBannerMessage, sectorProfileForLevelIndex } from "./sector";
+import {
+  loadProgress,
+  saveProgress,
+  worldExpansionBannerMessage,
+  worldExpansionStep,
+} from "./progress";
+import {
+  cameraModeLabel,
+  loadSettings,
+  saveSettings,
+  type CameraMode,
+  type GameSettings,
+} from "./settings";
+import { sectorBannerMessage, sectorProfileForSectorLevel } from "./sector";
 import { computeScreenHudLayout, hitTestScreenHud } from "./screenHud";
 import { clamp, len, sub } from "./math";
 import { SHIP_FLIGHT_TIME_SCALE, SIM_DT, stepPhysics } from "./physics";
@@ -41,6 +60,7 @@ import {
 const POWER_SCALE = 1.95;
 const REF_MIN_DRAG = 18;
 const REF_MAX_DRAG = 130;
+const SHIP_AIM_PICK_PX = 48;
 
 function dragBounds(viewportMin: number) {
   const s = viewportMin / 600;
@@ -94,8 +114,24 @@ export class Game {
     offsetY: 0,
   };
   private seenSectorTier = -1;
+  private seenWorldStep = 0;
   private sectorBannerUntil = 0;
   private brakePointerDown = false;
+  private baseLayout: ViewportLayout = {
+    width: 1,
+    height: 1,
+    worldW: 800,
+    worldH: 600,
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+  };
+  private camera: CameraFocus = { camX: 400, camY: 300, scale: 1 };
+  private aimPanCenter: Vec2 | null = null;
+  private panDragging = false;
+  private panLastScreen: Vec2 | null = null;
+  private settings: GameSettings = loadSettings();
+  private settingsOpen = false;
   private upgrades: ShipUpgrades = (() => {
     const u = loadUpgrades();
     if (u.credits !== TEST_STARTING_CREDITS) {
@@ -116,7 +152,10 @@ export class Game {
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.renderer = new Renderer(this.canvas, dpr);
-    this.state = this.createInitialState(0);
+    const progress = loadProgress();
+    this.seenSectorTier = sectorProfileForSectorLevel(progress.sectorLevel).tier - 1;
+    this.seenWorldStep = worldExpansionStep(progress.sectorLevel) - 1;
+    this.state = this.createInitialState(0, progress.sectorLevel, false);
 
     this.bindEvents();
     this.updatePreview();
@@ -140,24 +179,72 @@ export class Game {
     return Math.min(width, height);
   }
 
-  private syncViewportLayout() {
+  private syncViewportLayout(sectorLevel: number) {
     const { width, height } = this.viewportSize();
-    this.layout = computeViewportLayout(width, height);
+    this.baseLayout = computeViewportLayout(width, height, sectorLevel);
+  }
+
+  private syncCameraLayout() {
+    const panCenter =
+      this.settings.cameraMode === "pan" ? this.aimPanCenter : null;
+    this.camera = tickCamera(
+      this.baseLayout,
+      this.level,
+      this.state.phase,
+      this.settings.cameraMode,
+      this.state.ship,
+      this.state.velocity,
+      this.camera,
+      panCenter
+    );
+    this.layout = applyCameraToLayout(this.baseLayout, this.camera);
     this.renderer.setLayout(this.layout);
   }
 
-  private loadLevel(index: number) {
-    const vmin = this.viewportMin();
-    this.level = resolveLevel(index, this.layout.worldW, this.layout.worldH, vmin);
+  private resetAimCamera() {
+    const center = { x: this.level.width / 2, y: this.level.height / 2 };
+    this.aimPanCenter = { ...center };
+    this.camera = initAimCamera(
+      this.baseLayout,
+      this.level,
+      this.settings.cameraMode,
+      this.aimPanCenter
+    );
+    this.layout = applyCameraToLayout(this.baseLayout, this.camera);
+    this.renderer.setLayout(this.layout);
   }
 
-  private maybeShowSectorBanner(levelIndex: number) {
-    const profile = sectorProfileForLevelIndex(levelIndex);
-    if (profile.tier <= this.seenSectorTier) return;
-    this.seenSectorTier = profile.tier;
-    if (profile.tier === 0) return;
-    this.state.message = sectorBannerMessage(profile);
-    this.sectorBannerUntil = performance.now() + 3000;
+  private loadLevel(index: number, sectorLevel: number) {
+    const vmin = this.viewportMin();
+    this.level = resolveLevel(
+      index,
+      this.baseLayout.worldW,
+      this.baseLayout.worldH,
+      sectorLevel,
+      vmin
+    );
+  }
+
+  private maybeShowSectorBanners(sectorLevel: number) {
+    const profile = sectorProfileForSectorLevel(sectorLevel);
+    const step = worldExpansionStep(sectorLevel);
+
+    if (profile.tier > this.seenSectorTier) {
+      this.seenSectorTier = profile.tier;
+      if (profile.tier > 0) {
+        this.state.message = sectorBannerMessage(profile);
+        this.sectorBannerUntil = performance.now() + 3000;
+        return;
+      }
+    }
+
+    if (step > this.seenWorldStep) {
+      this.seenWorldStep = step;
+      if (step > 0) {
+        this.state.message = worldExpansionBannerMessage(step);
+        this.sectorBannerUntil = performance.now() + 3000;
+      }
+    }
   }
 
   private clearSectorBannerIfDue() {
@@ -169,12 +256,19 @@ export class Game {
     }
   }
 
-  private createInitialState(levelIndex: number): GameState {
-    this.syncViewportLayout();
-    this.loadLevel(levelIndex);
+  private createInitialState(
+    levelIndex: number,
+    sectorLevel: number,
+    isRandomSector: boolean
+  ): GameState {
+    this.syncViewportLayout(sectorLevel);
+    this.loadLevel(levelIndex, sectorLevel);
+    this.resetAimCamera();
     const level = this.level;
     const state: GameState = {
       levelIndex,
+      sectorLevel,
+      isRandomSector,
       phase: "aim",
       ship: { ...level.start },
       velocity: { x: 0, y: 0 },
@@ -192,7 +286,7 @@ export class Game {
       collectedArtifactIds: [],
     };
     this.state = state;
-    this.maybeShowSectorBanner(levelIndex);
+    this.maybeShowSectorBanners(sectorLevel);
     return state;
   }
 
@@ -248,7 +342,17 @@ export class Game {
 
   private closeShop() {
     this.shopOpen = false;
+    this.settingsOpen = false;
     this.paintPreview = null;
+  }
+
+  private setCameraMode(mode: CameraMode) {
+    if (this.settings.cameraMode === mode) return;
+    this.settings = { cameraMode: mode };
+    saveSettings(this.settings);
+    this.state.message = cameraModeLabel(mode);
+    this.resetAimCamera();
+    this.updatePreview(true);
   }
 
   private selectPaintColor(index: number) {
@@ -286,6 +390,7 @@ export class Game {
       this.layout.width,
       this.layout.height,
       this.shopOpen,
+      this.settingsOpen,
       this.upgrades,
       this.paintPreview
     );
@@ -294,6 +399,9 @@ export class Game {
 
     if (hit.type === "open") this.shopOpen = true;
     else if (hit.type === "close") this.closeShop();
+    else if (hit.type === "gear") this.settingsOpen = true;
+    else if (hit.type === "settingsBack") this.settingsOpen = false;
+    else if (hit.type === "cameraMode") this.setCameraMode(hit.mode);
     else if (hit.type === "reset") this.resetAllUpgrades();
     else if (hit.type === "buy") this.buyUpgrade(hit.id);
     else if (hit.type === "color") this.selectPaintColor(hit.index);
@@ -344,6 +452,13 @@ export class Game {
           this.pointer = toWorld(e);
           return;
         }
+        const nearShip = this.screenNearShip(screen);
+        if (this.settings.cameraMode === "pan" && !nearShip) {
+          this.panDragging = true;
+          this.panLastScreen = screen;
+          this.canvas.setPointerCapture(e.pointerId);
+          return;
+        }
         this.dragging = true;
         this.pointer = toWorld(e);
         this.updateAim(screen);
@@ -357,6 +472,10 @@ export class Game {
       this.pointer = toWorld(e);
       if (this.brakePointerDown && this.state.phase === "flight") return;
       if (this.shopOpen && this.canUseShop()) return;
+      if (this.panDragging && this.state.phase === "aim") {
+        this.applyPanDrag(screen);
+        return;
+      }
       if (this.dragging && this.state.phase === "aim") this.updateAim(screen);
     });
 
@@ -366,6 +485,16 @@ export class Game {
         this.brakePointerDown = false;
         this.braking = false;
         this.state.braking = false;
+        try {
+          this.canvas.releasePointerCapture(e.pointerId);
+        } catch {
+          /* already released */
+        }
+        return;
+      }
+      if (this.panDragging) {
+        this.panDragging = false;
+        this.panLastScreen = null;
         try {
           this.canvas.releasePointerCapture(e.pointerId);
         } catch {
@@ -402,6 +531,10 @@ export class Game {
           this.helpOpen = false;
           return;
         }
+        if (this.settingsOpen) {
+          this.settingsOpen = false;
+          return;
+        }
         if (this.shopOpen) {
           this.closeShop();
           return;
@@ -431,6 +564,22 @@ export class Game {
         this.state.braking = false;
       }
     });
+  }
+
+  private screenNearShip(screenP: Vec2): boolean {
+    const shipScreen = worldToScreen(this.state.ship, this.layout);
+    return len(sub(screenP, shipScreen)) < SHIP_AIM_PICK_PX;
+  }
+
+  private applyPanDrag(screenP: Vec2) {
+    if (!this.panLastScreen || !this.aimPanCenter) return;
+    const delta = sub(screenP, this.panLastScreen);
+    this.aimPanCenter = {
+      x: this.aimPanCenter.x - delta.x / this.layout.scale,
+      y: this.aimPanCenter.y - delta.y / this.layout.scale,
+    };
+    this.panLastScreen = screenP;
+    this.syncCameraLayout();
   }
 
   private updateAim(screenP: Vec2) {
@@ -485,6 +634,8 @@ export class Game {
     this.state.jumps += 1;
     this.state.phase = "flight";
     this.state.message = "";
+    this.panDragging = false;
+    this.syncCameraLayout();
     this.state.trail = [{ ...this.state.ship }];
     this.coastTimer = 0;
     this.trailFrame = 0;
@@ -611,11 +762,16 @@ export class Game {
     this.state.phase = "aim";
     this.state.aimPower = 0;
     this.previewPath = { segments: [] };
+    this.resetAimCamera();
   }
 
   private restartLevel() {
     this.closeShop();
-    this.state = this.createInitialState(this.state.levelIndex);
+    this.state = this.createInitialState(
+      this.state.levelIndex,
+      this.state.sectorLevel,
+      this.state.isRandomSector
+    );
     this.previewPath = { segments: [] };
     this.braking = false;
     this.coastTimer = 0;
@@ -624,20 +780,31 @@ export class Game {
 
   private nextLevel() {
     this.closeShop();
-    this.state = this.createInitialState(this.state.levelIndex + 1);
+    const nextSector = this.state.isRandomSector
+      ? this.state.sectorLevel
+      : this.state.sectorLevel + 1;
+    if (!this.state.isRandomSector) {
+      saveProgress({ sectorLevel: nextSector });
+    }
+    this.state = this.createInitialState(
+      this.state.levelIndex + 1,
+      nextSector,
+      this.state.isRandomSector
+    );
     this.previewPath = { segments: [] };
     this.updatePreview();
   }
 
   private generateLevel() {
     this.closeShop();
-    this.syncViewportLayout();
+    this.syncViewportLayout(this.state.sectorLevel);
     const { index } = createRandomLevel(
-      this.layout.worldW,
-      this.layout.worldH,
+      this.baseLayout.worldW,
+      this.baseLayout.worldH,
+      this.state.sectorLevel,
       this.viewportMin()
     );
-    this.state = this.createInitialState(index);
+    this.state = this.createInitialState(index, this.state.sectorLevel, true);
     this.previewPath = { segments: [] };
     this.updatePreview();
   }
@@ -654,30 +821,33 @@ export class Game {
     const { width, height } = this.viewportSize();
     if (width <= 0 || height <= 0) return;
 
-    const prevWorldW = this.layout.worldW;
-    const prevWorldH = this.layout.worldH;
-    this.layout = computeViewportLayout(width, height);
-    this.renderer.setLayout(this.layout);
+    const prevWorldW = this.baseLayout.worldW;
+    const prevWorldH = this.baseLayout.worldH;
+    this.syncViewportLayout(this.state.sectorLevel);
 
     const worldChanged =
-      Math.abs(this.layout.worldW - prevWorldW) > 0.5 ||
-      Math.abs(this.layout.worldH - prevWorldH) > 0.5;
+      Math.abs(this.baseLayout.worldW - prevWorldW) > 0.5 ||
+      Math.abs(this.baseLayout.worldH - prevWorldH) > 0.5;
 
     if (worldChanged && this.level) {
       const shipNx = this.state.ship.x / this.level.width;
       const shipNy = this.state.ship.y / this.level.height;
       const wasAim = this.state.phase === "aim";
-      this.loadLevel(this.state.levelIndex);
+      this.loadLevel(this.state.levelIndex, this.state.sectorLevel);
       this.state.ship = {
         x: shipNx * this.level.width,
         y: shipNy * this.level.height,
       };
       if (wasAim) {
+        this.resetAimCamera();
         this.state.trail = [];
         this.updatePreview(true);
+      } else {
+        this.syncCameraLayout();
       }
-    } else if (this.state.phase === "aim") {
-      this.updatePreview(true);
+    } else {
+      this.syncCameraLayout();
+      if (this.state.phase === "aim") this.updatePreview(true);
     }
   }
 
@@ -691,11 +861,14 @@ export class Game {
       this.checkAsteroidCollision();
       this.checkHarvest();
     }
+    this.syncCameraLayout();
     this.renderer.draw(
       this.level,
       this.state,
       this.upgrades,
       this.shopOpen,
+      this.settingsOpen,
+      this.settings.cameraMode,
       this.helpOpen,
       this.pointer,
       this.previewPath,

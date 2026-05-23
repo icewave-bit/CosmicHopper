@@ -8,6 +8,7 @@ import type { Asteroid, GameState, Level, PreviewPath, Vec2, ViewportLayout } fr
 import { drawHelpOverlay, drawHelpPrompt } from "./helpRenderer";
 import { computeScreenHudLayout, drawScreenHud } from "./screenHud";
 import { drawShop } from "./shopRenderer";
+import type { CameraMode } from "./settings";
 import { drawShieldAura } from "./shipVisuals";
 import { shipColor, type ShipUpgrades } from "./upgrades";
 
@@ -72,6 +73,8 @@ export class Renderer {
     state: GameState,
     upgrades: ShipUpgrades,
     shopOpen: boolean,
+    settingsOpen: boolean,
+    cameraMode: CameraMode,
     helpOpen: boolean,
     pointer: Vec2 | null,
     preview: PreviewPath = { segments: [] },
@@ -122,7 +125,7 @@ export class Renderer {
     this.drawVignette(w, h);
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawShop(ctx, vw, vh, state, upgrades, shopOpen, paintPreview);
+    drawShop(ctx, vw, vh, state, upgrades, shopOpen, settingsOpen, cameraMode, paintPreview);
     if (helpOpen) {
       drawHelpOverlay(ctx, vw, vh);
     } else {
@@ -657,7 +660,7 @@ export class Renderer {
     ctx.font = `10px ${font}`;
     ctx.fillStyle = COLORS.phosphor;
     ctx.textAlign = "left";
-    ctx.fillText(level.name, 16, 24);
+    ctx.fillText(`SECTOR ${String(state.sectorLevel).padStart(2, "0")}`, 16, 24);
 
     ctx.font = `8px ${font}`;
     ctx.fillStyle = COLORS.credits;

@@ -1,4 +1,5 @@
 import { drawShieldAura } from "./shipVisuals";
+import { cameraModeLabel, type CameraMode } from "./settings";
 import { computeShopLayout, type ShopLayout } from "./shopUi";
 import type { GameState } from "./types";
 import type { ShipUpgrades, UpgradeId } from "./upgrades";
@@ -29,6 +30,8 @@ export function drawShop(
   state: GameState,
   upgrades: ShipUpgrades,
   shopOpen: boolean,
+  settingsOpen: boolean,
+  cameraMode: CameraMode,
   paintPreview: number | null
 ) {
   const canUse = state.phase === "aim" && state.jumps === 0;
@@ -38,6 +41,7 @@ export function drawShop(
     viewportW,
     viewportH,
     shopOpen,
+    settingsOpen,
     upgrades,
     paintPreview
   );
@@ -47,7 +51,7 @@ export function drawShop(
     return;
   }
 
-  drawModal(ctx, layout, upgrades, viewportW, viewportH, paintPreview);
+  drawModal(ctx, layout, upgrades, viewportW, viewportH, cameraMode, paintPreview);
 }
 
 function drawOpenButton(ctx: CanvasRenderingContext2D, layout: ShopLayout) {
@@ -75,6 +79,7 @@ function drawModal(
   upgrades: ShipUpgrades,
   viewportW: number,
   viewportH: number,
+  cameraMode: CameraMode,
   paintPreview: number | null
 ) {
   const { modal } = layout;
@@ -92,24 +97,58 @@ function drawModal(
   ctx.font = `14px ${font}`;
   ctx.textAlign = "left";
   ctx.fillStyle = COLORS.phosphor;
-  ctx.fillText("SHOP", modal.x + 16, modal.y + 30);
+  ctx.fillText(layout.settingsOpen ? "SETTINGS" : "SHOP", modal.x + 16, modal.y + 30);
 
-  ctx.font = `10px ${font}`;
-  ctx.fillStyle = COLORS.credits;
-  ctx.fillText(`CREDITS ${upgrades.credits}`, modal.x + 16, modal.y + 46);
+  if (!layout.settingsOpen) {
+    ctx.font = `10px ${font}`;
+    ctx.fillStyle = COLORS.credits;
+    ctx.fillText(`CREDITS ${upgrades.credits}`, modal.x + 16, modal.y + 46);
+  }
 
-  const rb = layout.resetButton;
-  ctx.fillStyle = "rgba(255, 80, 80, 0.18)";
-  ctx.fillRect(rb.x, rb.y, rb.w, rb.h);
-  ctx.strokeStyle = "rgba(255, 100, 100, 0.85)";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(rb.x, rb.y, rb.w, rb.h);
-  ctx.font = `7px ${font}`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = "rgba(255, 120, 120, 0.95)";
-  ctx.fillText("RST", rb.x + rb.w / 2, rb.y + rb.h / 2);
-  ctx.textBaseline = "alphabetic";
+  if (layout.settingsBackButton) {
+    const bb = layout.settingsBackButton;
+    ctx.fillStyle = "rgba(57, 255, 20, 0.12)";
+    ctx.fillRect(bb.x, bb.y, bb.w, bb.h);
+    ctx.strokeStyle = COLORS.phosphorDim;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(bb.x, bb.y, bb.w, bb.h);
+    ctx.font = `7px ${font}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COLORS.phosphor;
+    ctx.fillText("BACK", bb.x + bb.w / 2, bb.y + bb.h / 2);
+    ctx.textBaseline = "alphabetic";
+  }
+
+  if (!layout.settingsOpen) {
+    const gb = layout.gearButton;
+    ctx.fillStyle = "rgba(0, 229, 255, 0.12)";
+    ctx.fillRect(gb.x, gb.y, gb.w, gb.h);
+    ctx.strokeStyle = COLORS.accent;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(gb.x, gb.y, gb.w, gb.h);
+    ctx.font = `7px ${font}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COLORS.accent;
+    ctx.fillText("SET", gb.x + gb.w / 2, gb.y + gb.h / 2);
+    ctx.textBaseline = "alphabetic";
+  }
+
+  if (!layout.settingsOpen) {
+    const rb = layout.resetButton;
+    ctx.fillStyle = "rgba(255, 80, 80, 0.18)";
+    ctx.fillRect(rb.x, rb.y, rb.w, rb.h);
+    ctx.strokeStyle = "rgba(255, 100, 100, 0.85)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(rb.x, rb.y, rb.w, rb.h);
+    ctx.font = `7px ${font}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "rgba(255, 120, 120, 0.95)";
+    ctx.fillText("RST", rb.x + rb.w / 2, rb.y + rb.h / 2);
+    ctx.textBaseline = "alphabetic";
+  }
 
   const cb = layout.closeButton;
   ctx.fillStyle = "rgba(255, 107, 53, 0.2)";
@@ -123,6 +162,17 @@ function drawModal(
   ctx.fillStyle = COLORS.warn;
   ctx.fillText("X", cb.x + cb.w / 2, cb.y + cb.h / 2);
   ctx.textBaseline = "alphabetic";
+
+  if (layout.settingsOpen) {
+    ctx.font = `9px ${font}`;
+    ctx.textAlign = "left";
+    ctx.fillStyle = COLORS.phosphorDim;
+    ctx.fillText("CAMERA", modal.x + 24, modal.y + 72);
+    for (const btn of layout.cameraModeButtons) {
+      drawCameraModeButton(ctx, btn.bounds, btn.mode, cameraMode);
+    }
+    return;
+  }
 
   for (const card of layout.upgradeCards) {
     drawUpgradeCard(ctx, card.id, card.bounds, card.buy, upgrades);
@@ -148,6 +198,35 @@ function drawModal(
   const hull = shipColor(upgrades, paintPreview);
   drawShieldAura(ctx, previewX, previewY, upgrades.shield, hull);
   drawPreviewShip(ctx, previewX, previewY, hull);
+}
+
+function drawCameraModeButton(
+  ctx: CanvasRenderingContext2D,
+  bounds: { x: number; y: number; w: number; h: number },
+  mode: CameraMode,
+  active: CameraMode
+) {
+  const font = '"Press Start 2P", monospace';
+  const selected = mode === active;
+
+  ctx.fillStyle = selected ? "rgba(57, 255, 20, 0.2)" : "rgba(0, 0, 0, 0.45)";
+  ctx.fillRect(bounds.x, bounds.y, bounds.w, bounds.h);
+  ctx.strokeStyle = selected ? COLORS.phosphor : COLORS.phosphorFaint;
+  ctx.lineWidth = selected ? 2 : 1;
+  ctx.strokeRect(bounds.x, bounds.y, bounds.w, bounds.h);
+
+  ctx.font = `8px ${font}`;
+  ctx.textAlign = "left";
+  ctx.fillStyle = selected ? COLORS.phosphor : COLORS.phosphorDim;
+  ctx.fillText(cameraModeLabel(mode), bounds.x + 12, bounds.y + 28);
+
+  ctx.font = `7px ${font}`;
+  ctx.fillStyle = COLORS.phosphorDim;
+  const hint =
+    mode === "overview"
+      ? "Full map while aiming · follows ship in flight"
+      : "Drag background to pan · follows in flight";
+  ctx.fillText(hint, bounds.x + 12, bounds.y + 52);
 }
 
 function drawUpgradeCard(

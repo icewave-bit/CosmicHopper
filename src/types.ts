@@ -75,6 +75,10 @@ export type PreviewPath = {
 
 export type GameState = {
   levelIndex: number;
+  /** 1-based campaign depth (HUD, world scale, sectors). */
+  sectorLevel: number;
+  /** Random test sector — winning does not advance campaign. */
+  isRandomSector: boolean;
   phase: GamePhase;
   ship: Vec2;
   velocity: Vec2;

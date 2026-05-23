@@ -2,7 +2,8 @@ import { defaultArtifact } from "./artifacts";
 import { REF_H } from "./fitLevel";
 import { applyWorldBounds, marginFor, type NormalizedBody, type NormalizedLevelDef } from "./levelLayout";
 import { dist, len, sub } from "./math";
-import { simulateTrajectory } from "./physics";
+import { worldScaleMultiplier } from "./progress";
+import { simulateTrajectory, type SimResult } from "./physics";
 import type { Body, Level, Vec2 } from "./types";
 import { effectiveSectorRange, type SectorProfile } from "./sector";
 
@@ -21,10 +22,11 @@ const PLANET_COLORS = [
 
 export type GenerateOptions = {
   seed: number;
-  displayIndex?: number;
+  displayName: string;
   worldW: number;
   worldH: number;
   profile: SectorProfile;
+  sectorLevel: number;
   viewportMinPx?: number;
 };
 
@@ -65,17 +67,26 @@ function pickStart(rng: () => number, w: number, h: number, margin: number): Vec
   }
 }
 
+/** Rough single-launch reach; full game allows chained jumps + slingshots. */
+function routeReachCap(range: number, worldMult: number): number {
+  const growth = 1 + 0.35 * Math.max(0, worldMult - 1);
+  return 400 * range * growth;
+}
+
 function pickBlackHole(
   rng: () => number,
   w: number,
   h: number,
   margin: number,
   start: Vec2,
-  range: number
+  range: number,
+  worldMult: number
 ): Vec2 {
-  const minDist = 260 * range;
-  const maxDist = 520 * range;
-  for (let i = 0; i < 40; i++) {
+  const span = Math.min(w, h);
+  const reach = routeReachCap(range, worldMult);
+  const minDist = Math.min(240 * range, reach * 0.42);
+  const maxDist = Math.min(span * 0.82, reach);
+  for (let i = 0; i < 48; i++) {
     const p = {
       x: margin + 40 + rng() * (w - margin * 2 - 80),
       y: margin + 40 + rng() * (h - margin * 2 - 80),
@@ -83,7 +94,16 @@ function pickBlackHole(
     const d = dist(p, start);
     if (d > minDist && d < maxDist) return p;
   }
-  return { x: w - 100, y: h * 0.25 + rng() * h * 0.5 };
+  const angle = rng() * Math.PI * 2;
+  const d = minDist + rng() * (maxDist - minDist);
+  return {
+    x: clampWorld(start.x + Math.cos(angle) * d, margin, w - margin),
+    y: clampWorld(start.y + Math.sin(angle) * d, margin, h - margin),
+  };
+}
+
+function clampWorld(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
 }
 
 function planetBetween(start: Vec2, hole: Vec2, planet: Vec2, range: number): boolean {
@@ -96,36 +116,60 @@ function planetBetween(start: Vec2, hole: Vec2, planet: Vec2, range: number): bo
   return dist(planet, { x: start.x + ab.x * t, y: start.y + ab.y * t }) < 120 * range;
 }
 
+function positionKey(p: Vec2): string {
+  return `${Math.round(p.x / 24)}:${Math.round(p.y / 24)}`;
+}
+
+/** Matches gameplay: repeated aim + launch until capture (base engine power). */
 function isSolvable(level: Level): boolean {
   const hole = level.bodies.find((b) => b.kind === "blackhole");
   if (!hole) return false;
 
   const bounds = { w: level.width, h: level.height };
   const maxSpeed = 100 * POWER_SCALE;
+  const maxJumps = Math.max(8, level.par + 2);
+  const angleSteps = 16;
 
-  const tryShot = (from: Vec2, angle: number): boolean => {
+  const tryShot = (from: Vec2, angle: number): SimResult => {
     const vel = { x: Math.cos(angle) * maxSpeed, y: Math.sin(angle) * maxSpeed };
-    const result = simulateTrajectory(from, vel, level.bodies, bounds);
-    if (result.type === "captured") return true;
-    if (result.type === "stopped") {
-      const toHole = sub(hole, result.position);
-      if (len(toHole) < hole.radius * 2) return false;
-      const angle2 = Math.atan2(toHole.y, toHole.x);
-      const vel2 = { x: Math.cos(angle2) * maxSpeed, y: Math.sin(angle2) * maxSpeed };
-      const r2 = simulateTrajectory(result.position, vel2, level.bodies, bounds);
-      return r2.type === "captured";
-    }
-    return false;
+    return simulateTrajectory(from, vel, level.bodies, bounds);
   };
 
-  for (let i = 0; i < 20; i++) {
-    const angle = (i / 20) * Math.PI * 2;
-    if (tryShot(level.start, angle)) return true;
-  }
+  let frontier: Vec2[] = [level.start];
+  const visited = new Set<string>([positionKey(level.start)]);
 
-  const toHole = Math.atan2(hole.y - level.start.y, hole.x - level.start.x);
-  for (const spread of [-0.45, -0.22, 0, 0.22, 0.45]) {
-    if (tryShot(level.start, toHole + spread)) return true;
+  for (let jump = 0; jump < maxJumps; jump++) {
+    const next: Vec2[] = [];
+
+    for (const from of frontier) {
+      for (let i = 0; i < angleSteps; i++) {
+        const angle = (i / angleSteps) * Math.PI * 2;
+        const result = tryShot(from, angle);
+        if (result.type === "captured") return true;
+        if (result.type !== "stopped") continue;
+
+        const key = positionKey(result.position);
+        if (visited.has(key)) continue;
+        if (dist(result.position, hole) < hole.radius * 1.5) continue;
+
+        visited.add(key);
+        next.push(result.position);
+      }
+
+      const toHole = Math.atan2(hole.y - from.y, hole.x - from.x);
+      for (const spread of [-0.5, -0.25, 0, 0.25, 0.5]) {
+        const result = tryShot(from, toHole + spread);
+        if (result.type === "captured") return true;
+        if (result.type !== "stopped") continue;
+        const key = positionKey(result.position);
+        if (visited.has(key)) continue;
+        visited.add(key);
+        next.push(result.position);
+      }
+    }
+
+    if (next.length === 0) return false;
+    frontier = next;
   }
 
   return false;
@@ -156,22 +200,31 @@ function toNormalized(
 
 function tryGenerate(
   seed: number,
-  displayIndex: number,
+  displayName: string,
   worldW: number,
   worldH: number,
   profile: SectorProfile,
+  sectorLevel: number,
   viewportMinPx: number
 ): Level | null {
   const rng = mulberry32(seed);
   const margin = marginFor(worldW, worldH);
   const range = effectiveSectorRange(profile, viewportMinPx);
+  const worldMult = worldScaleMultiplier(sectorLevel);
+  const bodyShrink = 1 / Math.cbrt(worldMult);
   const difficulty = Math.min(3, Math.floor(seed / 7) % 4);
-  const planetCount =
-    2 + Math.floor(rng() * 3) + (difficulty > 1 ? 1 : 0) + Math.floor(profile.density - 1);
+  const planetCount = Math.min(
+    12,
+    2 +
+      Math.floor(rng() * 3) +
+      (difficulty > 1 ? 1 : 0) +
+      Math.floor(profile.density - 1) +
+      Math.floor((worldMult - 1) * 3)
+  );
 
   const start = pickStart(rng, worldW, worldH, margin);
-  const holePos = pickBlackHole(rng, worldW, worldH, margin, start, range);
-  const holeRadius = (24 + Math.floor(rng() * 8)) * (0.92 + range * 0.04);
+  const holePos = pickBlackHole(rng, worldW, worldH, margin, start, range, worldMult);
+  const holeRadius = (24 + Math.floor(rng() * 8)) * (0.92 + range * 0.04) * bodyShrink;
   const holeMass = 17500 + Math.floor(rng() * 5500);
 
   const bodies: Body[] = [
@@ -186,12 +239,12 @@ function tryGenerate(
     },
   ];
 
-  const padScale = 28 * (0.85 + range * 0.08);
+  const padScale = 28 * (0.85 + range * 0.08) * bodyShrink;
 
   for (let i = 0; i < planetCount; i++) {
     let placed = false;
     for (let attempt = 0; attempt < 60; attempt++) {
-      const radius = (26 + Math.floor(rng() * 20)) * (0.95 + range * 0.03);
+      const radius = (26 + Math.floor(rng() * 20)) * (0.95 + range * 0.03) * bodyShrink;
       const mass = 6500 + radius * 160 + Math.floor(rng() * 3500);
       const candidate: Body = {
         id: `p${i}`,
@@ -225,12 +278,14 @@ function tryGenerate(
   }
 
   const planets = bodies.filter((b) => b.kind === "planet");
-  if (!planets.some((p) => planetBetween(start, holePos, p, range))) return null;
+  const betweenCount = planets.filter((p) => planetBetween(start, holePos, p, range)).length;
+  const needBetween = worldMult >= 1.45 ? 2 : 1;
+  if (betweenCount < needBetween) return null;
 
   const norm = toNormalized(bodies, start, worldW, worldH);
   const def: NormalizedLevelDef = {
     id: `gen-${seed}`,
-    name: `SECTOR ${String(displayIndex + 1).padStart(2, "0")}`,
+    name: displayName,
     startNx: norm.startNx,
     startNy: norm.startNy,
     bodies: norm.bodies,
@@ -243,10 +298,10 @@ function tryGenerate(
   return isSolvable(level) ? level : null;
 }
 
-function fallbackDef(displayIndex: number, baseSeed: number): NormalizedLevelDef {
+function fallbackDef(displayName: string, baseSeed: number): NormalizedLevelDef {
   return {
     id: `gen-fallback-${baseSeed}`,
-    name: `SECTOR ${String(displayIndex + 1).padStart(2, "0")}`,
+    name: displayName,
     startNx: 80 / 800,
     startNy: 0.5,
     par: 3,
@@ -278,21 +333,38 @@ function fallbackDef(displayIndex: number, baseSeed: number): NormalizedLevelDef
 
 export function generateLevel(options: GenerateOptions): Level {
   const baseSeed = options.seed;
-  const displayIndex = options.displayIndex ?? baseSeed;
-  const { worldW, worldH, profile } = options;
+  const { worldW, worldH, profile, displayName, sectorLevel } = options;
   const viewportMinPx = options.viewportMinPx ?? 600;
+  const attempts = sectorLevel >= 20 ? 96 : 48;
 
-  for (let attempt = 0; attempt < 48; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const level = tryGenerate(
       baseSeed + attempt * 9973,
-      displayIndex,
+      displayName,
       worldW,
       worldH,
       profile,
+      sectorLevel,
       viewportMinPx
     );
     if (level) return level;
   }
 
-  return applyWorldBounds(fallbackDef(displayIndex, baseSeed), worldW, worldH);
+  const fallback = applyWorldBounds(fallbackDef(displayName, baseSeed), worldW, worldH);
+  if (isSolvable(fallback)) return fallback;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const level = tryGenerate(
+      baseSeed + 500_000 + attempt * 9973,
+      displayName,
+      worldW,
+      worldH,
+      profile,
+      sectorLevel,
+      viewportMinPx
+    );
+    if (level) return level;
+  }
+
+  return fallback;
 }

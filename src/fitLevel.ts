@@ -1,3 +1,4 @@
+import { worldScaleMultiplier } from "./progress";
 import type { Vec2, ViewportLayout } from "./types";
 
 /** Internal reference height — world coordinates scale from viewport aspect. */
@@ -11,22 +12,30 @@ function clampAspect(viewportW: number, viewportH: number): number {
   return Math.min(MAX_ASPECT, Math.max(MIN_ASPECT, raw));
 }
 
-/** World size derived from viewport aspect (uniform physics scale via REF_H). */
-export function computeWorldSize(viewportW: number, viewportH: number): { worldW: number; worldH: number } {
+/** World size derived from viewport aspect and campaign sector depth. */
+export function computeWorldSize(
+  viewportW: number,
+  viewportH: number,
+  sectorLevel: number
+): { worldW: number; worldH: number } {
   const aspect = clampAspect(viewportW, viewportH);
-  return { worldW: REF_H * aspect, worldH: REF_H };
+  const mult = worldScaleMultiplier(sectorLevel);
+  return { worldW: REF_H * aspect * mult, worldH: REF_H * mult };
 }
 
-/** Full-bleed layout: single uniform scale, no letterbox offsets. */
-export function computeViewportLayout(viewportW: number, viewportH: number): ViewportLayout {
-  const { worldW, worldH } = computeWorldSize(viewportW, viewportH);
-  const scale = viewportW / worldW;
+/** Base layout before camera pan/zoom (scale 1, offsets 0). */
+export function computeViewportLayout(
+  viewportW: number,
+  viewportH: number,
+  sectorLevel: number
+): ViewportLayout {
+  const { worldW, worldH } = computeWorldSize(viewportW, viewportH, sectorLevel);
   return {
     width: viewportW,
     height: viewportH,
     worldW,
     worldH,
-    scale,
+    scale: viewportW / worldW,
     offsetX: 0,
     offsetY: 0,
   };
@@ -34,14 +43,14 @@ export function computeViewportLayout(viewportW: number, viewportH: number): Vie
 
 export function screenToWorld(screen: Vec2, layout: ViewportLayout): Vec2 {
   return {
-    x: screen.x / layout.scale,
-    y: screen.y / layout.scale,
+    x: (screen.x - layout.offsetX) / layout.scale,
+    y: (screen.y - layout.offsetY) / layout.scale,
   };
 }
 
 export function worldToScreen(world: Vec2, layout: ViewportLayout): Vec2 {
   return {
-    x: world.x * layout.scale,
-    y: world.y * layout.scale,
+    x: world.x * layout.scale + layout.offsetX,
+    y: world.y * layout.scale + layout.offsetY,
   };
 }
